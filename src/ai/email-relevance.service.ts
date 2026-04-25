@@ -1,15 +1,16 @@
 import { openai } from "@/lib/openai";
-import { SearchedEmail } from "@/services/gmail.service";
+import type { SearchedEmail } from "@/services/gmail.service";
 
 interface EmailRelevanceResult {
   isRelevant: boolean;
-  relevanceScore: number;
+  aiScore: number;
   summary: string;
   reason: string;
 }
 
 interface ParsedModelResponse {
   isRelevant?: unknown;
+  aiScore?: unknown;
   relevanceScore?: unknown;
   summary?: unknown;
   reason?: unknown;
@@ -47,7 +48,12 @@ export async function checkEmailRelevance(
   userQuery: string,
   topic: string | null,
   semanticIntent: string,
-  email: Pick<SearchedEmail, "subject" | "from" | "to" | "cc" | "date" | "snippet" | "body">,
+  ruleScore: number,
+  matchedSignals: string[],
+  email: Pick<
+    SearchedEmail,
+    "subject" | "from" | "to" | "cc" | "date" | "snippet" | "body" | "attachmentFilenames"
+  >,
 ): Promise<EmailRelevanceResult> {
   const truncatedBody = email.body.slice(0, MAX_BODY_CHARS);
 
@@ -59,13 +65,12 @@ export async function checkEmailRelevance(
       {
         role: "system",
         content:
-          "You are an AI assistant that evaluates whether an email is relevant to a user's query topic. Be strict and precise. " +
+          "You are an AI assistant that ranks semantic relevance for an email candidate. " +
           "Return only valid JSON with this exact schema: " +
-          '{"isRelevant": boolean, "relevanceScore": number, "summary": string, "reason": string}. ' +
-          "Use semantic meaning, not exact keyword matching. Consider subject, snippet, and body most heavily. " +
-          "Primary goal: decide whether email content semantically matches the requested topic. " +
-          "Rules: only mark relevant if email semantically matches the topic and intent; weak relation should score 50-69; unrelated should be below 50. " +
-          "Set isRelevant true only when relevanceScore >= 70.",
+          '{"aiScore": number, "isRelevant": boolean, "summary": string, "reason": string}. ' +
+          "Use semantic meaning. Consider subject, snippet, body, sender, and attachments. " +
+          "ruleScore and matchedSignals are deterministic retrieval signals; do not aggressively reject when exact topic/entity signals exist unless clearly unrelated. " +
+          "Use aiScore 0-100, where >=70 strong, 50-69 possible.",
       },
       {
         role: "user",
@@ -73,6 +78,8 @@ export async function checkEmailRelevance(
           userQuery,
           topic,
           semanticIntent,
+          ruleScore,
+          matchedSignals,
           email: {
             subject: email.subject,
             from: email.from,
@@ -81,6 +88,7 @@ export async function checkEmailRelevance(
             date: email.date,
             snippet: email.snippet,
             body: truncatedBody,
+            attachmentFilenames: email.attachmentFilenames,
           },
         }),
       },
@@ -93,16 +101,18 @@ export async function checkEmailRelevance(
   }
 
   const parsed = parseJsonObject(modelContent);
-  const relevanceScore = normalizeScore(parsed.relevanceScore);
-  const scoredRelevant = relevanceScore >= RELEVANCE_THRESHOLD;
+  const aiScore = normalizeScore(
+    typeof parsed.aiScore === "number" ? parsed.aiScore : parsed.relevanceScore,
+  );
+  const scoredRelevant = aiScore >= RELEVANCE_THRESHOLD;
 
   return {
     isRelevant: scoredRelevant && parsed.isRelevant === true,
-    relevanceScore,
+    aiScore,
     summary: toSafeString(parsed.summary, "No summary generated."),
     reason: toSafeString(
       parsed.reason,
-      relevanceScore >= POSSIBLE_MATCH_THRESHOLD
+      aiScore >= POSSIBLE_MATCH_THRESHOLD
         ? "Possible semantic match."
         : "No semantic match with requested intent.",
     ),

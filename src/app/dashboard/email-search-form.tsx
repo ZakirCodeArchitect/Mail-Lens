@@ -12,7 +12,11 @@ interface EmailResult {
   body: string;
   summary: string;
   reason: string;
-  relevanceScore: number;
+  ruleScore: number;
+  aiScore: number;
+  finalScore: number;
+  matchedSignals: string[];
+  label: "Highly Relevant" | "Possible Match";
 }
 
 interface EmailSearchFormProps {
@@ -23,24 +27,16 @@ function toInputDate(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
 
-function getRelevanceBand(score: number): { label: string; className: string } {
-  if (score >= 70) {
+function getRelevanceBand(label: EmailResult["label"]): { label: string; className: string } {
+  if (label === "Highly Relevant") {
     return {
-      label: "Relevant",
+      label,
       className: "bg-emerald-100 text-emerald-800 border border-emerald-200",
     };
   }
-
-  if (score >= 50) {
-    return {
-      label: "Possible Match",
-      className: "bg-amber-100 text-amber-800 border border-amber-200",
-    };
-  }
-
   return {
-    label: "Low Confidence",
-    className: "bg-slate-100 text-slate-700 border border-slate-200",
+    label,
+    className: "bg-amber-100 text-amber-800 border border-amber-200",
   };
 }
 
@@ -58,7 +54,10 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
   const [processedCount, setProcessedCount] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<EmailResult[]>([]);
-  const [candidateCount, setCandidateCount] = useState<number | null>(null);
+  const [candidateCountBeforeDedup, setCandidateCountBeforeDedup] = useState<number | null>(null);
+  const [uniqueCandidateCount, setUniqueCandidateCount] = useState<number | null>(null);
+  const [aiAnalyzedCount, setAiAnalyzedCount] = useState<number | null>(null);
+  const [finalCount, setFinalCount] = useState<number | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [expandedEmailId, setExpandedEmailId] = useState<string | null>(null);
@@ -88,7 +87,10 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
     setError(null);
     setWarning(null);
     setResults([]);
-    setCandidateCount(null);
+    setCandidateCountBeforeDedup(null);
+    setUniqueCandidateCount(null);
+    setAiAnalyzedCount(null);
+    setFinalCount(null);
     setExpandedEmailId(null);
     setLoadingStepIndex(0);
     setProcessedCount(1);
@@ -105,7 +107,10 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
       const data = (await response.json()) as {
         results?: EmailResult[];
         warning?: string;
-        candidateCount?: number;
+        candidateCountBeforeDedup?: number;
+        uniqueCandidateCount?: number;
+        aiAnalyzedCount?: number;
+        finalCount?: number;
         error?: string;
       };
 
@@ -114,14 +119,22 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
       }
 
       setResults(data.results ?? []);
-      setCandidateCount(typeof data.candidateCount === "number" ? data.candidateCount : null);
+      setCandidateCountBeforeDedup(
+        typeof data.candidateCountBeforeDedup === "number" ? data.candidateCountBeforeDedup : null,
+      );
+      setUniqueCandidateCount(typeof data.uniqueCandidateCount === "number" ? data.uniqueCandidateCount : null);
+      setAiAnalyzedCount(typeof data.aiAnalyzedCount === "number" ? data.aiAnalyzedCount : null);
+      setFinalCount(typeof data.finalCount === "number" ? data.finalCount : null);
       setWarning(data.warning ?? null);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Unexpected error";
       setError(message);
       setWarning(null);
       setResults([]);
-      setCandidateCount(null);
+      setCandidateCountBeforeDedup(null);
+      setUniqueCandidateCount(null);
+      setAiAnalyzedCount(null);
+      setFinalCount(null);
     } finally {
       setIsLoading(false);
     }
@@ -234,7 +247,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
             <p className="text-sm text-slate-500">{results.length} matched emails</p>
           </div>
           {results.map((email) => {
-            const relevanceBand = getRelevanceBand(email.relevanceScore);
+            const relevanceBand = getRelevanceBand(email.label);
             const gmailTargetId = email.threadId || email.id;
             const gmailUrl = `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(gmailTargetId)}`;
             return (
@@ -251,7 +264,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
                   >
                     {relevanceBand.label}
                   </p>
-                  <p className="text-xs font-semibold text-indigo-700">Score {email.relevanceScore}</p>
+                  <p className="text-xs font-semibold text-indigo-700">Final Score {email.finalScore}</p>
                 </div>
 
                 <h3 className="text-base font-semibold text-slate-900">{email.subject || "(No subject)"}</h3>
@@ -267,6 +280,15 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
                 <p className="mt-2 text-sm leading-6 text-slate-700">
                   <span className="font-semibold text-slate-900">Reason:</span> {email.reason || "(No reason)"}
                 </p>
+                <p className="mt-2 text-xs text-slate-600">
+                  Rule Score: {email.ruleScore} | AI Score: {email.aiScore}
+                </p>
+                {email.matchedSignals.length > 0 ? (
+                  <p className="mt-1 text-xs text-slate-600">
+                    <span className="font-semibold text-slate-800">Matched Signals:</span>{" "}
+                    {email.matchedSignals.join(", ")}
+                  </p>
+                ) : null}
                 <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-700">
                   {email.snippet || "(No snippet)"}
                 </p>
@@ -301,8 +323,15 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
               </article>
             );
           })}
-          {process.env.NODE_ENV !== "production" && candidateCount !== null ? (
-            <p className="text-xs font-medium text-slate-500">Candidates analyzed: {candidateCount}</p>
+          {process.env.NODE_ENV !== "production" &&
+          candidateCountBeforeDedup !== null &&
+          uniqueCandidateCount !== null &&
+          aiAnalyzedCount !== null &&
+          finalCount !== null ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
+              Candidates before dedup: {candidateCountBeforeDedup} | Unique candidates: {uniqueCandidateCount} | AI
+              analyzed: {aiAnalyzedCount} | Final count: {finalCount}
+            </div>
           ) : null}
         </div>
       ) : null}

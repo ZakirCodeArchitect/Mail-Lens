@@ -4,6 +4,12 @@ import { analyzeSearchIntent } from "@/ai/search-intent.service";
 import { checkEmailRelevance } from "@/ai/email-relevance.service";
 import { prisma } from "@/lib/prisma";
 import { searchEmails } from "@/services/gmail.service";
+import {
+  detectQueryType,
+  hasExactTopicMatch,
+  scoreEmailCandidate,
+  sortByRuleScoreAndDate,
+} from "@/services/search-pipeline.service";
 
 interface SearchRequestBody {
   query?: string;
@@ -21,69 +27,19 @@ interface SearchResponseResult {
   body: string;
   summary: string;
   reason: string;
-  relevanceScore: number;
+  ruleScore: number;
+  aiScore: number;
+  finalScore: number;
+  matchedSignals: string[];
+  label: "Highly Relevant" | "Possible Match";
 }
 
 function isValidDateInput(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-function normalizeText(value: string): string {
-  return value.toLowerCase();
-}
-
-function tokenize(value: string): string[] {
-  return normalizeText(value)
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((token) => token.length >= 2);
-}
-
-function isSenderMatch(sender: string | null, text: string): boolean {
-  if (!sender) {
-    return false;
-  }
-
-  const senderTokens = tokenize(sender);
-  if (senderTokens.length === 0) {
-    return false;
-  }
-
-  const haystack = normalizeText(text);
-  return senderTokens.some((token) => haystack.includes(token));
-}
-
-function passesLightweightFilters(
-  emailFrom: string,
-  emailBody: string,
-  includeForwarded: boolean,
-  requiresLinks: boolean,
-  sender: string | null,
-): boolean {
-  const body = normalizeText(emailBody);
-  const isDirectSenderMatch = isSenderMatch(sender, emailFrom);
-  const hasForwardedMarker = body.includes("forwarded");
-  const hasFromMarker = body.includes("from:");
-  const isForwardedSenderMatch = sender
-    ? (hasForwardedMarker || hasFromMarker) && isSenderMatch(sender, emailBody)
-    : hasForwardedMarker || hasFromMarker;
-
-  if (includeForwarded) {
-    if (!isDirectSenderMatch && !isForwardedSenderMatch) {
-      return false;
-    }
-  } else if (sender && !isDirectSenderMatch) {
-    return false;
-  }
-
-  if (requiresLinks) {
-    const hasLink = body.includes("http") || body.includes("www");
-    if (!hasLink) {
-      return false;
-    }
-  }
-
-  return true;
+function toLabel(score: number): "Highly Relevant" | "Possible Match" {
+  return score >= 75 ? "Highly Relevant" : "Possible Match";
 }
 
 export async function POST(request: NextRequest) {
@@ -131,39 +87,75 @@ export async function POST(request: NextRequest) {
     });
 
     const intent = await analyzeSearchIntent(query);
-    const { emails, gmailQueryUsed } = await searchEmails(userId, intent, startDate, endDate);
-    const candidateCount = emails.length;
-    console.info("[gmail/search] Stage 2 complete (gmail fetch)", { candidateCount, gmailQueryUsed });
-
-    const filteredEmails = emails.filter((email) =>
-      passesLightweightFilters(
-        email.from,
-        email.body,
-        intent.includeForwarded,
-        intent.requiresLinks,
-        intent.sender,
-      ),
+    const queryTypes = detectQueryType(query, intent);
+    const { emails, queriesUsed, candidateCountBeforeDedup } = await searchEmails(
+      userId,
+      intent,
+      startDate,
+      endDate,
+      queryTypes,
     );
-    const afterFilterCount = filteredEmails.length;
-    console.info("[gmail/search] Stage 3 complete (code filtering)", {
-      afterFilterCount,
-      includeForwarded: intent.includeForwarded,
-      requiresLinks: intent.requiresLinks,
+    const uniqueCandidateCount = emails.length;
+    console.info("[gmail/search] Stage 2 complete (hybrid retrieval)", {
+      queryTypes,
+      queriesUsed,
+      candidateCountBeforeDedup,
+      uniqueCandidateCount,
+    });
+
+    const scoredCandidates = emails.map((email) => ({
+      email,
+      ...scoreEmailCandidate(email, intent, queryTypes, query),
+    }));
+
+    const rankedCandidates = sortByRuleScoreAndDate(
+      scoredCandidates.map((candidate) => ({
+        email: candidate.email,
+        ruleScore: candidate.ruleScore,
+      })),
+    );
+    const candidateById = new Map(scoredCandidates.map((item) => [item.email.id, item]));
+    const aiInputCandidates = rankedCandidates
+      .slice(0, 30)
+      .map((entry) => candidateById.get(entry.email.id))
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+    const aiAnalyzedCount = aiInputCandidates.length;
+    console.info("[gmail/search] Stage 3 complete (rule scoring)", {
+      scoredCandidateCount: scoredCandidates.length,
+      aiAnalyzedCount,
     });
 
     const results: SearchResponseResult[] = [];
 
-    for (const email of filteredEmails) {
+    for (const candidate of aiInputCandidates) {
+      const { email, ruleScore, matchedSignals } = candidate;
       try {
-        const relevance = await checkEmailRelevance(query, intent.topic, intent.semanticIntent, email);
+        const relevance = await checkEmailRelevance(
+          query,
+          intent.topic,
+          intent.semanticIntent,
+          ruleScore,
+          matchedSignals,
+          email,
+        );
+        const aiScore = relevance.aiScore;
+        const finalScore = Math.max(ruleScore, aiScore);
+        const hasTopicProtection =
+          queryTypes.includes("topic") && hasExactTopicMatch(email, intent, query) && ruleScore >= 40;
+        const include =
+          finalScore >= 50 || hasTopicProtection || (ruleScore >= 40 && queryTypes.includes("topic"));
+
         console.info("[gmail/search] AI relevance evaluation", {
           emailId: email.id,
-          relevanceScore: relevance.relevanceScore,
+          ruleScore,
+          aiScore,
+          finalScore,
           isRelevant: relevance.isRelevant,
           reason: relevance.reason,
+          matchedSignals,
         });
 
-        if (relevance.relevanceScore < 50) {
+        if (!include) {
           continue;
         }
 
@@ -177,7 +169,11 @@ export async function POST(request: NextRequest) {
           body: email.body,
           summary: relevance.summary,
           reason: relevance.reason,
-          relevanceScore: relevance.relevanceScore,
+          ruleScore,
+          aiScore,
+          finalScore,
+          matchedSignals,
+          label: toLabel(finalScore),
         });
       } catch (aiError) {
         console.error("[gmail/search] AI relevance check failed. Skipping email.", {
@@ -186,20 +182,25 @@ export async function POST(request: NextRequest) {
         });
       }
     }
-    results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    results.sort((a, b) => b.finalScore - a.finalScore);
     const finalCount = results.length;
 
-    console.info("[gmail/search] Stage 4 complete (AI filtering)", {
-      candidateCount,
-      afterFilterCount,
+    console.info("[gmail/search] Stage 4 complete (AI ranking + final filtering)", {
+      queryTypes,
+      queriesUsed,
+      candidateCountBeforeDedup,
+      uniqueCandidateCount,
+      aiAnalyzedCount,
       finalCount,
     });
 
     return NextResponse.json({
-      gmailQueryUsed,
+      queryTypes,
+      queriesUsed,
       intent,
-      candidateCount,
-      afterFilterCount,
+      candidateCountBeforeDedup,
+      uniqueCandidateCount,
+      aiAnalyzedCount,
       finalCount,
       results,
     });
