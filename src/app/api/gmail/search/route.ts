@@ -117,8 +117,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       gmailQueryUsed,
       intent,
-      candidateCount: 50,
-      fetchedCandidateCount: emails.length,
+      candidateCount: emails.length,
       results,
     });
   } catch (error) {

@@ -56,6 +56,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
   const [processedCount, setProcessedCount] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<EmailResult[]>([]);
+  const [candidateCount, setCandidateCount] = useState<number | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
@@ -69,7 +70,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
     }, 1300);
 
     const counterTimer = window.setInterval(() => {
-      setProcessedCount((current) => (current < 20 ? current + 1 : current));
+      setProcessedCount((current) => (current < 50 ? current + 1 : current));
     }, 900);
 
     return () => {
@@ -84,6 +85,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
     setError(null);
     setWarning(null);
     setResults([]);
+    setCandidateCount(null);
     setLoadingStepIndex(0);
     setProcessedCount(1);
     setIsLoading(true);
@@ -99,6 +101,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
       const data = (await response.json()) as {
         results?: EmailResult[];
         warning?: string;
+        candidateCount?: number;
         error?: string;
       };
 
@@ -107,12 +110,14 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
       }
 
       setResults(data.results ?? []);
+      setCandidateCount(typeof data.candidateCount === "number" ? data.candidateCount : null);
       setWarning(data.warning ?? null);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Unexpected error";
       setError(message);
       setWarning(null);
       setResults([]);
+      setCandidateCount(null);
     } finally {
       setIsLoading(false);
     }
@@ -198,11 +203,6 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
 
       {results.length > 0 ? (
         <div className="mt-6 space-y-3">
-          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700">
-            <p>🟢 Relevant (70+)</p>
-            <p>🟡 Possible Match (50-69)</p>
-            <p>🔴 Not Relevant (&lt;50 - hidden)</p>
-          </div>
           {results.map((email) => (
             <article key={email.id} className="rounded-md border border-slate-200 bg-slate-50 p-4">
               {(() => {
@@ -230,6 +230,9 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
               <p className="mt-2 text-sm text-slate-700">{email.snippet || "(No snippet)"}</p>
             </article>
           ))}
+          {process.env.NODE_ENV !== "production" && candidateCount !== null ? (
+            <p className="text-xs text-slate-500">Candidates analyzed: {candidateCount}</p>
+          ) : null}
         </div>
       ) : null}
     </section>
