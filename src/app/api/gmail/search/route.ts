@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { analyzeSearchIntent } from "@/ai/search-intent.service";
 import { checkEmailRelevance } from "@/ai/email-relevance.service";
 import { prisma } from "@/lib/prisma";
 import { searchEmails } from "@/services/gmail.service";
@@ -8,6 +9,17 @@ interface SearchRequestBody {
   query?: string;
   startDate?: string;
   endDate?: string;
+}
+
+interface SearchResponseResult {
+  id: string;
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
+  summary: string;
+  reason: string;
+  relevanceScore: number;
 }
 
 function isValidDateInput(value: string): boolean {
@@ -58,29 +70,23 @@ export async function POST(request: NextRequest) {
       queryLength: query.length,
     });
 
-    const emails = await searchEmails(userId, query, startDate, endDate);
-    console.info("[gmail/search] Fetched Gmail emails", { count: emails.length });
+    const intent = await analyzeSearchIntent(query);
+    const { emails, gmailQueryUsed } = await searchEmails(userId, intent, startDate, endDate);
+    console.info("[gmail/search] Gmail raw result count before AI", { count: emails.length });
 
-    const results: Array<{
-      id: string;
-      subject: string;
-      from: string;
-      date: string;
-      snippet: string;
-      summary: string;
-      reason: string;
-      relevanceScore: number;
-    }> = [];
+    const results: SearchResponseResult[] = [];
 
     for (const email of emails) {
       try {
-        const relevance = await checkEmailRelevance(query, email);
+        const relevance = await checkEmailRelevance(query, intent.semanticIntent, email);
+        console.info("[gmail/search] AI relevance evaluation", {
+          emailId: email.id,
+          relevanceScore: relevance.relevanceScore,
+          isRelevant: relevance.isRelevant,
+          reason: relevance.reason,
+        });
 
-        if (!relevance.isRelevant) {
-          console.info("[gmail/search] Skipping non-relevant email", {
-            emailId: email.id,
-            relevanceScore: relevance.relevanceScore,
-          });
+        if (relevance.relevanceScore < 50) {
           continue;
         }
 
@@ -101,13 +107,20 @@ export async function POST(request: NextRequest) {
         });
       }
     }
+    results.sort((a, b) => b.relevanceScore - a.relevanceScore);
 
     console.info("[gmail/search] Returning relevant emails", {
       relevantCount: results.length,
       totalFetched: emails.length,
     });
 
-    return NextResponse.json({ results });
+    return NextResponse.json({
+      gmailQueryUsed,
+      intent,
+      candidateCount: 50,
+      fetchedCandidateCount: emails.length,
+      results,
+    });
   } catch (error) {
     console.error("Gmail search failed", error);
     return NextResponse.json({ error: "Failed to search Gmail emails" }, { status: 500 });

@@ -3,6 +3,8 @@ import type { gmail_v1 } from "googleapis";
 interface ParsedEmail {
   subject: string;
   from: string;
+  to: string;
+  cc: string;
   date: string;
   body: string;
 }
@@ -87,6 +89,8 @@ export function parseGmailMessage(message: gmail_v1.Schema$Message): ParsedEmail
   return {
     subject: getHeaderValue(headers, "subject"),
     from: getHeaderValue(headers, "from"),
+    to: getHeaderValue(headers, "to"),
+    cc: getHeaderValue(headers, "cc"),
     date: getHeaderValue(headers, "date"),
     body: extractBody(payload),
   };

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 interface EmailResult {
   id: string;
@@ -22,40 +22,70 @@ function toInputDate(value: Date): string {
 }
 
 function getRelevanceBand(score: number): { label: string; className: string } {
-  if (score >= 90) {
+  if (score >= 70) {
     return {
-      label: "Excellent match",
+      label: "Relevant",
       className: "bg-emerald-100 text-emerald-800 border border-emerald-200",
     };
   }
 
-  if (score >= 80) {
+  if (score >= 50) {
     return {
-      label: "Strong match",
-      className: "bg-blue-100 text-blue-800 border border-blue-200",
+      label: "Possible Match",
+      className: "bg-amber-100 text-amber-800 border border-amber-200",
     };
   }
 
   return {
-    label: "Relevant",
-    className: "bg-amber-100 text-amber-800 border border-amber-200",
+    label: "Low Confidence",
+    className: "bg-slate-100 text-slate-700 border border-slate-200",
   };
 }
 
 export function EmailSearchForm({ userId }: EmailSearchFormProps) {
+  const loadingSteps = useMemo(
+    () => ["Fetching Gmail emails", "Annotating email intent", "Searching relevant emails"],
+    [],
+  );
   const today = useMemo(() => new Date(), []);
   const [query, setQuery] = useState("");
   const [startDate, setStartDate] = useState(toInputDate(new Date(today.getFullYear(), 0, 1)));
   const [endDate, setEndDate] = useState(toInputDate(today));
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStepIndex, setLoadingStepIndex] = useState(0);
+  const [processedCount, setProcessedCount] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<EmailResult[]>([]);
+  const [warning, setWarning] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+
+  useEffect(() => {
+    if (!isLoading) {
+      return;
+    }
+
+    const stepTimer = window.setInterval(() => {
+      setLoadingStepIndex((current) => (current + 1) % loadingSteps.length);
+    }, 1300);
+
+    const counterTimer = window.setInterval(() => {
+      setProcessedCount((current) => (current < 20 ? current + 1 : current));
+    }, 900);
+
+    return () => {
+      window.clearInterval(stepTimer);
+      window.clearInterval(counterTimer);
+    };
+  }, [isLoading, loadingSteps]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitted(true);
     setError(null);
+    setWarning(null);
+    setResults([]);
+    setLoadingStepIndex(0);
+    setProcessedCount(1);
     setIsLoading(true);
 
     try {
@@ -66,16 +96,22 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
         body: JSON.stringify({ query, startDate, endDate }),
       });
 
-      const data = (await response.json()) as { results?: EmailResult[]; error?: string };
+      const data = (await response.json()) as {
+        results?: EmailResult[];
+        warning?: string;
+        error?: string;
+      };
 
       if (!response.ok) {
         throw new Error(data.error || "Search failed");
       }
 
       setResults(data.results ?? []);
+      setWarning(data.warning ?? null);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Unexpected error";
       setError(message);
+      setWarning(null);
       setResults([]);
     } finally {
       setIsLoading(false);
@@ -127,19 +163,30 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
           disabled={isLoading}
           className="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isLoading ? "AI is analyzing your emails..." : "Search Emails"}
+          {isLoading ? "AI is analyzing your emails" : "Search Emails"}
         </button>
       </form>
 
       {isLoading ? (
-        <p className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-          AI is analyzing your emails...
-        </p>
+        <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+          <p className="font-medium">AI is analyzing your emails...</p>
+          <p className="mt-1 inline-flex items-center gap-2 text-blue-800">
+            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+            {loadingSteps[loadingStepIndex]}...
+          </p>
+          <p className="mt-1 text-xs text-blue-700">Processed {processedCount}+ emails</p>
+        </div>
       ) : null}
 
       {error ? (
         <p className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           {error}
+        </p>
+      ) : null}
+
+      {warning ? (
+        <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {warning}
         </p>
       ) : null}
 
@@ -151,6 +198,11 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
 
       {results.length > 0 ? (
         <div className="mt-6 space-y-3">
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700">
+            <p>🟢 Relevant (70+)</p>
+            <p>🟡 Possible Match (50-69)</p>
+            <p>🔴 Not Relevant (&lt;50 - hidden)</p>
+          </div>
           {results.map((email) => (
             <article key={email.id} className="rounded-md border border-slate-200 bg-slate-50 p-4">
               {(() => {
