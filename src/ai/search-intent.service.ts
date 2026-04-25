@@ -16,6 +16,9 @@ interface ParsedIntentResponse {
   semanticIntent?: unknown;
 }
 
+const SENDER_INTENT_CUE_REGEX =
+  /\b(from|sent by|by|authored by|forwarded from|forwarded by|sender)\b/i;
+
 function toOptionalString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -30,6 +33,10 @@ function toBoolean(value: unknown, fallback: boolean): boolean {
     return value;
   }
   return fallback;
+}
+
+function shouldUseSenderFromQuery(userQuery: string): boolean {
+  return SENDER_INTENT_CUE_REGEX.test(userQuery);
 }
 
 function parseModelJson(content: string): ParsedIntentResponse {
@@ -75,7 +82,8 @@ export async function analyzeSearchIntent(userQuery: string): Promise<SearchInte
     typeof parsed.semanticIntent === "string" && parsed.semanticIntent.trim().length > 0
       ? parsed.semanticIntent.trim()
       : `Find emails relevant to: ${userQuery.trim()}`;
-  const sender = toOptionalString(parsed.sender);
+  const modelSender = toOptionalString(parsed.sender);
+  const sender = shouldUseSenderFromQuery(userQuery) ? modelSender : null;
   const includeForwarded = toBoolean(parsed.includeForwarded, false);
   const requiresLinks = toBoolean(parsed.requiresLinks, false);
   const topic = toOptionalString(parsed.topic);

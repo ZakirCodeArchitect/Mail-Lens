@@ -17,7 +17,7 @@ export interface SearchedEmail {
   body: string;
 }
 
-const CANDIDATE_EMAIL_LIMIT = 50;
+const CANDIDATE_EMAIL_LIMIT = 100;
 
 function sanitizeToken(value: string): string {
   return value.replace(/[()"]/g, " ").trim().replace(/\s+/g, " ");
@@ -46,10 +46,31 @@ function buildSenderFromClause(sender: string | null): string | null {
   return `(${Array.from(terms).join(" OR ")})`;
 }
 
+function buildTopicClause(topic: string | null): string | null {
+  if (!topic) {
+    return null;
+  }
+
+  const cleaned = sanitizeToken(topic);
+  if (!cleaned) {
+    return null;
+  }
+
+  const terms = new Set<string>();
+  terms.add(`"${cleaned}"`);
+
+  const parts = cleaned.split(" ").filter((part) => part.length >= 2);
+  for (const part of parts) {
+    terms.add(part);
+  }
+
+  return `(${Array.from(terms).join(" OR ")})`;
+}
+
 export function buildStructuredGmailQuery(
   startDate: string,
   endDate: string,
-  intent: Pick<SearchIntent, "sender">,
+  intent: Pick<SearchIntent, "sender" | "topic">,
 ): string {
   const after = startDate.replace(/-/g, "/");
   const before = endDate.replace(/-/g, "/");
@@ -58,13 +79,17 @@ export function buildStructuredGmailQuery(
   if (senderClause) {
     queryParts.push(senderClause);
   }
+  const topicClause = buildTopicClause(intent.topic);
+  if (topicClause) {
+    queryParts.push(topicClause);
+  }
 
   return queryParts.join(" ");
 }
 
 export async function searchEmails(
   userId: string,
-  intent: Pick<SearchIntent, "sender">,
+  intent: Pick<SearchIntent, "sender" | "topic">,
   startDate: string,
   endDate: string,
 ): Promise<{ emails: SearchedEmail[]; gmailQueryUsed: string }> {
