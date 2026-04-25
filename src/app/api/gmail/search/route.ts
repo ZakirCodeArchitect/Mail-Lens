@@ -13,10 +13,12 @@ interface SearchRequestBody {
 
 interface SearchResponseResult {
   id: string;
+  threadId: string;
   subject: string;
   from: string;
   date: string;
   snippet: string;
+  body: string;
   summary: string;
   reason: string;
   relevanceScore: number;
@@ -92,10 +94,12 @@ export async function POST(request: NextRequest) {
 
         results.push({
           id: email.id,
+          threadId: email.threadId,
           subject: email.subject,
           from: email.from,
           date: email.date,
           snippet: email.snippet,
+          body: email.body,
           summary: relevance.summary,
           reason: relevance.reason,
           relevanceScore: relevance.relevanceScore,

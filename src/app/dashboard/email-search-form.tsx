@@ -4,10 +4,12 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 interface EmailResult {
   id: string;
+  threadId: string;
   subject: string;
   from: string;
   date: string;
   snippet: string;
+  body: string;
   summary: string;
   reason: string;
   relevanceScore: number;
@@ -59,6 +61,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
   const [candidateCount, setCandidateCount] = useState<number | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  const [expandedEmailId, setExpandedEmailId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isLoading) {
@@ -86,6 +89,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
     setWarning(null);
     setResults([]);
     setCandidateCount(null);
+    setExpandedEmailId(null);
     setLoadingStepIndex(0);
     setProcessedCount(1);
     setIsLoading(true);
@@ -231,10 +235,15 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
           </div>
           {results.map((email) => {
             const relevanceBand = getRelevanceBand(email.relevanceScore);
+            const gmailTargetId = email.threadId || email.id;
+            const gmailUrl = `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(gmailTargetId)}`;
             return (
               <article
                 key={email.id}
-                className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300"
+                onClick={() => {
+                  setExpandedEmailId((current) => (current === email.id ? null : email.id));
+                }}
+                className="cursor-pointer rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300"
               >
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <p
@@ -261,6 +270,34 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
                 <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-700">
                   {email.snippet || "(No snippet)"}
                 </p>
+
+                {expandedEmailId === email.id ? (
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        Exact Email
+                      </p>
+                      <a
+                        href={gmailUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                        }}
+                        className="inline-flex items-center rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                      >
+                        View in Gmail
+                      </a>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-800">
+                      <span className="font-semibold text-slate-900">Subject:</span>{" "}
+                      {email.subject || "(No subject)"}
+                    </p>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-800">
+                      {email.body || email.snippet || "(No email content available)"}
+                    </p>
+                  </div>
+                ) : null}
               </article>
             );
           })}
