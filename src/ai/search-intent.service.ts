@@ -1,51 +1,35 @@
 import { openai } from "@/lib/openai";
 
 export interface SearchIntent {
-  people: string[];
-  organizations: string[];
-  topics: string[];
-  keywords: string[];
-  fromHints: string[];
+  sender: string | null;
+  includeForwarded: boolean;
+  requiresLinks: boolean;
+  topic: string | null;
   semanticIntent: string;
 }
 
 interface ParsedIntentResponse {
-  people?: unknown;
-  organizations?: unknown;
-  topics?: unknown;
-  keywords?: unknown;
-  fromHints?: unknown;
+  sender?: unknown;
+  includeForwarded?: unknown;
+  requiresLinks?: unknown;
+  topic?: unknown;
   semanticIntent?: unknown;
 }
 
-function toUniqueStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
+function toOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
   }
 
-  const seen = new Set<string>();
-  const normalized: string[] = [];
+  const cleaned = value.trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
 
-  for (const item of value) {
-    if (typeof item !== "string") {
-      continue;
-    }
-
-    const cleaned = item.trim();
-    if (!cleaned) {
-      continue;
-    }
-
-    const key = cleaned.toLowerCase();
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    normalized.push(cleaned);
+function toBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
   }
-
-  return normalized;
+  return fallback;
 }
 
 function parseModelJson(content: string): ParsedIntentResponse {
@@ -67,10 +51,12 @@ export async function analyzeSearchIntent(userQuery: string): Promise<SearchInte
         content:
           "Extract Gmail search intent from natural language query. " +
           "Return only valid JSON with this exact schema: " +
-          '{"people": string[], "organizations": string[], "topics": string[], "keywords": string[], "fromHints": string[], "semanticIntent": string}. ' +
-          "keywords should be broad retrieval hints with useful variants/synonyms, lowercase where natural, and include at least 5 when possible. " +
-          "fromHints should include sender/source names if user asks sent by, from, authored by, or forwarded from. " +
-          "semanticIntent should be one concise sentence capturing meaning.",
+          '{"sender": string | null, "includeForwarded": boolean, "requiresLinks": boolean, "topic": string | null, "semanticIntent": string}. ' +
+          "sender should capture the person/source name when present (for example, Zia), even when query only contains a partial or short name. " +
+          "includeForwarded should be true only when the query asks for forwarded content/sender context, but this does not exclude direct emails from sender. " +
+          "requiresLinks should be true only when query asks for links/URLs/resources. " +
+          "topic should be a short semantic topic phrase (for example, course). " +
+          "semanticIntent should be one concise sentence capturing semantic meaning.",
       },
       {
         role: "user",
@@ -89,23 +75,16 @@ export async function analyzeSearchIntent(userQuery: string): Promise<SearchInte
     typeof parsed.semanticIntent === "string" && parsed.semanticIntent.trim().length > 0
       ? parsed.semanticIntent.trim()
       : `Find emails relevant to: ${userQuery.trim()}`;
-
-  const people = toUniqueStringArray(parsed.people);
-  const organizations = toUniqueStringArray(parsed.organizations);
-  const topics = toUniqueStringArray(parsed.topics);
-  const keywords = toUniqueStringArray(parsed.keywords);
-  const fromHints = toUniqueStringArray(parsed.fromHints);
-
-  if (keywords.length === 0) {
-    keywords.push(...toUniqueStringArray(userQuery.split(/\s+/)));
-  }
+  const sender = toOptionalString(parsed.sender);
+  const includeForwarded = toBoolean(parsed.includeForwarded, false);
+  const requiresLinks = toBoolean(parsed.requiresLinks, false);
+  const topic = toOptionalString(parsed.topic);
 
   return {
-    people,
-    organizations,
-    topics,
-    keywords,
-    fromHints,
+    sender,
+    includeForwarded,
+    requiresLinks,
+    topic,
     semanticIntent,
   };
 }

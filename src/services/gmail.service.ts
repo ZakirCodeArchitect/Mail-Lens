@@ -17,52 +17,54 @@ export interface SearchedEmail {
   body: string;
 }
 
-const MAX_BROAD_KEYWORDS = 8;
 const CANDIDATE_EMAIL_LIMIT = 50;
 
-function sanitizeKeyword(keyword: string): string {
-  return keyword.replace(/[()"]/g, " ").trim().replace(/\s+/g, " ");
+function sanitizeToken(value: string): string {
+  return value.replace(/[()"]/g, " ").trim().replace(/\s+/g, " ");
 }
 
-export function buildBroadGmailQuery(
+function buildSenderFromClause(sender: string | null): string | null {
+  if (!sender) {
+    return null;
+  }
+
+  const cleaned = sanitizeToken(sender);
+  if (!cleaned) {
+    return null;
+  }
+
+  const terms = new Set<string>();
+  terms.add(`from:${cleaned}`);
+  terms.add(`from:"${cleaned}"`);
+
+  const firstToken = cleaned.split(" ")[0]?.trim();
+  if (firstToken && firstToken.toLowerCase() !== cleaned.toLowerCase()) {
+    terms.add(`from:${firstToken}`);
+    terms.add(`from:"${firstToken}"`);
+  }
+
+  return `(${Array.from(terms).join(" OR ")})`;
+}
+
+export function buildStructuredGmailQuery(
   startDate: string,
   endDate: string,
-  intent: Pick<SearchIntent, "keywords" | "fromHints">,
+  intent: Pick<SearchIntent, "sender">,
 ): string {
   const after = startDate.replace(/-/g, "/");
   const before = endDate.replace(/-/g, "/");
-  const seen = new Set<string>();
-  const broadKeywords: string[] = [];
-
-  for (const keyword of [...intent.fromHints, ...intent.keywords]) {
-    const sanitized = sanitizeKeyword(keyword);
-    if (!sanitized) {
-      continue;
-    }
-
-    const key = sanitized.toLowerCase();
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    broadKeywords.push(sanitized);
-    if (broadKeywords.length >= MAX_BROAD_KEYWORDS) {
-      break;
-    }
+  const queryParts = [`after:${after}`, `before:${before}`];
+  const senderClause = buildSenderFromClause(intent.sender);
+  if (senderClause) {
+    queryParts.push(senderClause);
   }
 
-  const baseQuery = `after:${after} before:${before}`;
-  if (broadKeywords.length === 0) {
-    return baseQuery;
-  }
-
-  return `${baseQuery} (${broadKeywords.join(" OR ")})`;
+  return queryParts.join(" ");
 }
 
 export async function searchEmails(
   userId: string,
-  intent: Pick<SearchIntent, "keywords" | "fromHints">,
+  intent: Pick<SearchIntent, "sender">,
   startDate: string,
   endDate: string,
 ): Promise<{ emails: SearchedEmail[]; gmailQueryUsed: string }> {
@@ -79,7 +81,7 @@ export async function searchEmails(
   oauthClient.setCredentials({ access_token: googleAccount.accessToken });
 
   const gmail = google.gmail({ version: "v1", auth: oauthClient });
-  const searchQuery = buildBroadGmailQuery(startDate, endDate, intent);
+  const searchQuery = buildStructuredGmailQuery(startDate, endDate, intent);
   console.log("[gmail/search] gmailQueryUsed:", searchQuery);
 
   const listResponse = await gmail.users.messages.list({

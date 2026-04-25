@@ -28,6 +28,64 @@ function isValidDateInput(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+function normalizeText(value: string): string {
+  return value.toLowerCase();
+}
+
+function tokenize(value: string): string[] {
+  return normalizeText(value)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+}
+
+function isSenderMatch(sender: string | null, text: string): boolean {
+  if (!sender) {
+    return false;
+  }
+
+  const senderTokens = tokenize(sender);
+  if (senderTokens.length === 0) {
+    return false;
+  }
+
+  const haystack = normalizeText(text);
+  return senderTokens.some((token) => haystack.includes(token));
+}
+
+function passesLightweightFilters(
+  emailFrom: string,
+  emailBody: string,
+  includeForwarded: boolean,
+  requiresLinks: boolean,
+  sender: string | null,
+): boolean {
+  const body = normalizeText(emailBody);
+  const isDirectSenderMatch = isSenderMatch(sender, emailFrom);
+  const hasForwardedMarker = body.includes("forwarded");
+  const hasFromMarker = body.includes("from:");
+  const isForwardedSenderMatch = sender
+    ? (hasForwardedMarker || hasFromMarker) && isSenderMatch(sender, emailBody)
+    : hasForwardedMarker || hasFromMarker;
+
+  if (includeForwarded) {
+    if (!isDirectSenderMatch && !isForwardedSenderMatch) {
+      return false;
+    }
+  } else if (sender && !isDirectSenderMatch) {
+    return false;
+  }
+
+  if (requiresLinks) {
+    const hasLink = body.includes("http") || body.includes("www");
+    if (!hasLink) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const providedUserId = request.nextUrl.searchParams.get("userId");
@@ -74,13 +132,30 @@ export async function POST(request: NextRequest) {
 
     const intent = await analyzeSearchIntent(query);
     const { emails, gmailQueryUsed } = await searchEmails(userId, intent, startDate, endDate);
-    console.info("[gmail/search] Gmail raw result count before AI", { count: emails.length });
+    const candidateCount = emails.length;
+    console.info("[gmail/search] Stage 2 complete (gmail fetch)", { candidateCount, gmailQueryUsed });
+
+    const filteredEmails = emails.filter((email) =>
+      passesLightweightFilters(
+        email.from,
+        email.body,
+        intent.includeForwarded,
+        intent.requiresLinks,
+        intent.sender,
+      ),
+    );
+    const afterFilterCount = filteredEmails.length;
+    console.info("[gmail/search] Stage 3 complete (code filtering)", {
+      afterFilterCount,
+      includeForwarded: intent.includeForwarded,
+      requiresLinks: intent.requiresLinks,
+    });
 
     const results: SearchResponseResult[] = [];
 
-    for (const email of emails) {
+    for (const email of filteredEmails) {
       try {
-        const relevance = await checkEmailRelevance(query, intent.semanticIntent, email);
+        const relevance = await checkEmailRelevance(query, intent.topic, intent.semanticIntent, email);
         console.info("[gmail/search] AI relevance evaluation", {
           emailId: email.id,
           relevanceScore: relevance.relevanceScore,
@@ -112,16 +187,20 @@ export async function POST(request: NextRequest) {
       }
     }
     results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    const finalCount = results.length;
 
-    console.info("[gmail/search] Returning relevant emails", {
-      relevantCount: results.length,
-      totalFetched: emails.length,
+    console.info("[gmail/search] Stage 4 complete (AI filtering)", {
+      candidateCount,
+      afterFilterCount,
+      finalCount,
     });
 
     return NextResponse.json({
       gmailQueryUsed,
       intent,
-      candidateCount: emails.length,
+      candidateCount,
+      afterFilterCount,
+      finalCount,
       results,
     });
   } catch (error) {

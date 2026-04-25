@@ -45,6 +45,7 @@ function parseJsonObject(content: string): ParsedModelResponse {
 
 export async function checkEmailRelevance(
   userQuery: string,
+  topic: string | null,
   semanticIntent: string,
   email: Pick<SearchedEmail, "subject" | "from" | "to" | "cc" | "date" | "snippet" | "body">,
 ): Promise<EmailRelevanceResult> {
@@ -58,21 +59,19 @@ export async function checkEmailRelevance(
       {
         role: "system",
         content:
-          "You are an AI assistant that evaluates whether an email is relevant to a user's query. Be strict and precise. " +
+          "You are an AI assistant that evaluates whether an email is relevant to a user's query topic. Be strict and precise. " +
           "Return only valid JSON with this exact schema: " +
           '{"isRelevant": boolean, "relevanceScore": number, "summary": string, "reason": string}. ' +
-          "Use semantic meaning, not exact keyword matching. Consider from, to, cc, subject, snippet, and body together. " +
-          "Prioritize semantic intent and not Gmail's sender field alone. " +
-          "For forwarded emails, inspect body/snippet for original sender names like 'From: <person>'. " +
-          "If user asks for sent by or forwarded from a person, match when: From contains person OR forwarded content includes person OR body contains full/username variants. " +
-          "If user asks for course links, match content about courses/training/learning with links or URLs. " +
-          "Rules: only mark relevant if email semantically matches user request; weak relation should score 50-69; unrelated should be below 50. " +
+          "Use semantic meaning, not exact keyword matching. Consider subject, snippet, and body most heavily. " +
+          "Primary goal: decide whether email content semantically matches the requested topic. " +
+          "Rules: only mark relevant if email semantically matches the topic and intent; weak relation should score 50-69; unrelated should be below 50. " +
           "Set isRelevant true only when relevanceScore >= 70.",
       },
       {
         role: "user",
         content: JSON.stringify({
           userQuery,
+          topic,
           semanticIntent,
           email: {
             subject: email.subject,
