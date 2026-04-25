@@ -3,7 +3,8 @@ type EnvKey =
   | "GOOGLE_CLIENT_ID"
   | "GOOGLE_CLIENT_SECRET"
   | "GOOGLE_REDIRECT_URI"
-  | "APP_URL";
+  | "APP_URL"
+  | "OPENAI_API_KEY";
 
 export function getRequiredEnv(key: EnvKey): string {
   const value = process.env[key];

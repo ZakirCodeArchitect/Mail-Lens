@@ -4,12 +4,13 @@ import { FormEvent, useMemo, useState } from "react";
 
 interface EmailResult {
   id: string;
-  threadId: string;
   subject: string;
   from: string;
   date: string;
   snippet: string;
-  body: string;
+  summary: string;
+  reason: string;
+  relevanceScore: number;
 }
 
 interface EmailSearchFormProps {
@@ -18,6 +19,27 @@ interface EmailSearchFormProps {
 
 function toInputDate(value: Date): string {
   return value.toISOString().slice(0, 10);
+}
+
+function getRelevanceBand(score: number): { label: string; className: string } {
+  if (score >= 90) {
+    return {
+      label: "Excellent match",
+      className: "bg-emerald-100 text-emerald-800 border border-emerald-200",
+    };
+  }
+
+  if (score >= 80) {
+    return {
+      label: "Strong match",
+      className: "bg-blue-100 text-blue-800 border border-blue-200",
+    };
+  }
+
+  return {
+    label: "Relevant",
+    className: "bg-amber-100 text-amber-800 border border-amber-200",
+  };
 }
 
 export function EmailSearchForm({ userId }: EmailSearchFormProps) {
@@ -37,7 +59,8 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`/api/gmail/search?userId=${encodeURIComponent(userId)}`, {
+      const queryParams = userId ? `?userId=${encodeURIComponent(userId)}` : "";
+      const response = await fetch(`/api/gmail/search${queryParams}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, startDate, endDate }),
@@ -104,9 +127,15 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
           disabled={isLoading}
           className="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isLoading ? "Searching..." : "Search Emails"}
+          {isLoading ? "AI is analyzing your emails..." : "Search Emails"}
         </button>
       </form>
+
+      {isLoading ? (
+        <p className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          AI is analyzing your emails...
+        </p>
+      ) : null}
 
       {error ? (
         <p className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -124,9 +153,28 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
         <div className="mt-6 space-y-3">
           {results.map((email) => (
             <article key={email.id} className="rounded-md border border-slate-200 bg-slate-50 p-4">
+              {(() => {
+                const relevanceBand = getRelevanceBand(email.relevanceScore);
+                return (
+                  <p
+                    className={`mb-2 inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${relevanceBand.className}`}
+                  >
+                    {relevanceBand.label}
+                  </p>
+                );
+              })()}
               <h3 className="text-sm font-semibold text-slate-900">{email.subject || "(No subject)"}</h3>
               <p className="mt-1 text-xs text-slate-600">From: {email.from || "Unknown sender"}</p>
               <p className="text-xs text-slate-600">Date: {email.date || "Unknown date"}</p>
+              <p className="mt-1 text-xs font-medium text-indigo-700">
+                Relevance Score: {email.relevanceScore}
+              </p>
+              <p className="mt-2 text-sm text-slate-800">
+                <span className="font-medium">AI Summary:</span> {email.summary || "(No summary)"}
+              </p>
+              <p className="mt-1 text-sm text-slate-700">
+                <span className="font-medium">Reason:</span> {email.reason || "(No reason)"}
+              </p>
               <p className="mt-2 text-sm text-slate-700">{email.snippet || "(No snippet)"}</p>
             </article>
           ))}
