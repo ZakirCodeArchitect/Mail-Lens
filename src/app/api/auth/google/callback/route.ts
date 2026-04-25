@@ -3,13 +3,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { getGmailProfile, getTokensFromCode } from "@/lib/google";
 import { prisma } from "@/lib/prisma";
 
-function toDashboardUrl(request: NextRequest, status: "connected" | "error", reason?: string) {
+function toDashboardUrl(
+  request: NextRequest,
+  status: "connected" | "error",
+  reason?: string,
+  userId?: string,
+) {
   const appUrl = process.env.APP_URL || request.nextUrl.origin;
   const url = new URL("/dashboard", appUrl);
   url.searchParams.set("gmail", status);
 
   if (reason) {
     url.searchParams.set("reason", reason);
+  }
+
+  if (userId) {
+    url.searchParams.set("userId", userId);
   }
 
   return url;
@@ -64,7 +73,7 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    return NextResponse.redirect(toDashboardUrl(request, "connected").toString());
+    return NextResponse.redirect(toDashboardUrl(request, "connected", undefined, user.id).toString());
   } catch (error) {
     console.error("Google OAuth callback failed", error);
     return NextResponse.redirect(

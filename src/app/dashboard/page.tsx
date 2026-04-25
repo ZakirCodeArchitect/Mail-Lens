@@ -1,9 +1,12 @@
 import Link from "next/link";
 
+import { EmailSearchForm } from "@/app/dashboard/email-search-form";
+
 interface DashboardPageProps {
   searchParams?: Promise<{
     gmail?: string;
     reason?: string;
+    userId?: string;
   }>;
 }
 
@@ -35,6 +38,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const params = searchParams ? await searchParams : {};
   const gmail = params.gmail;
   const reason = params.reason;
+  const userId = params.userId;
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-16 text-slate-900">
@@ -56,6 +60,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             Connect Gmail
           </a>
         </div>
+
+        <EmailSearchForm userId={userId} />
       </div>
     </main>
   );
