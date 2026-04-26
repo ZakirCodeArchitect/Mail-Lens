@@ -71,12 +71,12 @@ function extractBody(payload: gmail_v1.Schema$MessagePart | undefined): string {
 
   const plainParts = collectPartsByMimeType(payload, "text/plain");
   if (plainParts.length > 0) {
-    return decodeBase64Url(plainParts[0]?.body?.data);
+    return decodeBase64Url(plainParts[0]?.body?.data ?? undefined);
   }
 
   const htmlParts = collectPartsByMimeType(payload, "text/html");
   if (htmlParts.length > 0) {
-    const html = decodeBase64Url(htmlParts[0]?.body?.data);
+    const html = decodeBase64Url(htmlParts[0]?.body?.data ?? undefined);
     return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   }
 

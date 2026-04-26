@@ -2,6 +2,9 @@ import { openai } from "@/lib/openai";
 import type { SearchedEmail } from "@/services/gmail.service";
 
 interface EmailRelevanceResult {
+  /** True when model JSON explicitly sets isRelevant: true (independent of score bands). */
+  modelDeclaresRelevant: boolean;
+  /** High confidence: strong score and model agrees. */
   isRelevant: boolean;
   aiScore: number;
   summary: string;
@@ -69,7 +72,9 @@ export async function checkEmailRelevance(
           "Return only valid JSON with this exact schema: " +
           '{"aiScore": number, "isRelevant": boolean, "summary": string, "reason": string}. ' +
           "Use semantic meaning. Consider subject, snippet, body, sender, and attachments. " +
-          "ruleScore and matchedSignals are deterministic retrieval signals; do not aggressively reject when exact topic/entity signals exist unless clearly unrelated. " +
+          "ruleScore and matchedSignals are retrieval hints only; they can be wrong (substring noise). " +
+          "When the user asks about a specific organization, school, or acronym (e.g. QAU), set isRelevant to false for banking/security alerts, generic SaaS newsletters, unrelated vendor mail, and bulk notifications unless the message clearly discusses that organization. " +
+          "Mere co-occurrence of generic product words is not relevance. " +
           "Use aiScore 0-100, where >=70 strong, 50-69 possible.",
       },
       {
@@ -105,9 +110,11 @@ export async function checkEmailRelevance(
     typeof parsed.aiScore === "number" ? parsed.aiScore : parsed.relevanceScore,
   );
   const scoredRelevant = aiScore >= RELEVANCE_THRESHOLD;
+  const modelDeclaresRelevant = parsed.isRelevant === true;
 
   return {
-    isRelevant: scoredRelevant && parsed.isRelevant === true,
+    modelDeclaresRelevant,
+    isRelevant: scoredRelevant && modelDeclaresRelevant,
     aiScore,
     summary: toSafeString(parsed.summary, "No summary generated."),
     reason: toSafeString(

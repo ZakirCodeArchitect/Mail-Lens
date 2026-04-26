@@ -9,7 +9,7 @@ interface EmailResult {
   from: string;
   date: string;
   snippet: string;
-  body: string;
+  gmailUrl: string;
   summary: string;
   reason: string;
   ruleScore: number;
@@ -58,6 +58,10 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
   const [uniqueCandidateCount, setUniqueCandidateCount] = useState<number | null>(null);
   const [aiAnalyzedCount, setAiAnalyzedCount] = useState<number | null>(null);
   const [finalCount, setFinalCount] = useState<number | null>(null);
+  const [mode, setMode] = useState<"search" | "collection" | null>(null);
+  const [modeReason, setModeReason] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 25;
   const [warning, setWarning] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [expandedEmailId, setExpandedEmailId] = useState<string | null>(null);
@@ -91,6 +95,9 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
     setUniqueCandidateCount(null);
     setAiAnalyzedCount(null);
     setFinalCount(null);
+    setMode(null);
+    setModeReason(null);
+    setCurrentPage(1);
     setExpandedEmailId(null);
     setLoadingStepIndex(0);
     setProcessedCount(1);
@@ -105,6 +112,8 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
       });
 
       const data = (await response.json()) as {
+        mode?: "search" | "collection";
+        reason?: string;
         results?: EmailResult[];
         warning?: string;
         candidateCountBeforeDedup?: number;
@@ -119,6 +128,8 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
       }
 
       setResults(data.results ?? []);
+      setMode(data.mode ?? null);
+      setModeReason(data.reason ?? null);
       setCandidateCountBeforeDedup(
         typeof data.candidateCountBeforeDedup === "number" ? data.candidateCountBeforeDedup : null,
       );
@@ -126,6 +137,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
       setAiAnalyzedCount(typeof data.aiAnalyzedCount === "number" ? data.aiAnalyzedCount : null);
       setFinalCount(typeof data.finalCount === "number" ? data.finalCount : null);
       setWarning(data.warning ?? null);
+      setCurrentPage(1);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Unexpected error";
       setError(message);
@@ -135,10 +147,17 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
       setUniqueCandidateCount(null);
       setAiAnalyzedCount(null);
       setFinalCount(null);
+      setMode(null);
+      setModeReason(null);
+      setCurrentPage(1);
     } finally {
       setIsLoading(false);
     }
   }
+
+  const totalPages = Math.max(1, Math.ceil(results.length / pageSize));
+  const pageStart = (currentPage - 1) * pageSize;
+  const paginatedResults = results.slice(pageStart, pageStart + pageSize);
 
   return (
     <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
@@ -240,16 +259,23 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
         </p>
       ) : null}
 
+      {mode ? (
+        <p className="mt-5 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
+          Mode: <span className="font-semibold capitalize">{mode}</span>
+          {modeReason ? ` - ${modeReason}` : ""}
+        </p>
+      ) : null}
+
       {results.length > 0 ? (
         <div className="mt-7 space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-600">Results</h3>
-            <p className="text-sm text-slate-500">{results.length} matched emails</p>
+            <p className="text-sm text-slate-500">
+              {results.length} matched emails (Page {currentPage} of {totalPages})
+            </p>
           </div>
-          {results.map((email) => {
+          {paginatedResults.map((email) => {
             const relevanceBand = getRelevanceBand(email.label);
-            const gmailTargetId = email.threadId || email.id;
-            const gmailUrl = `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(gmailTargetId)}`;
             return (
               <article
                 key={email.id}
@@ -300,7 +326,7 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
                         Exact Email
                       </p>
                       <a
-                        href={gmailUrl}
+                        href={email.gmailUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={(event) => {
@@ -316,13 +342,36 @@ export function EmailSearchForm({ userId }: EmailSearchFormProps) {
                       {email.subject || "(No subject)"}
                     </p>
                     <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-800">
-                      {email.body || email.snippet || "(No email content available)"}
+                      {email.snippet || "(No email content available)"}
                     </p>
                   </div>
                 ) : null}
               </article>
             );
           })}
+          {totalPages > 1 ? (
+            <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+              <button
+                type="button"
+                disabled={currentPage === 1}
+                onClick={() => setCurrentPage((value) => Math.max(1, value - 1))}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <p className="text-slate-600">
+                Showing {pageStart + 1}-{Math.min(pageStart + pageSize, results.length)} of {results.length}
+              </p>
+              <button
+                type="button"
+                disabled={currentPage === totalPages}
+                onClick={() => setCurrentPage((value) => Math.min(totalPages, value + 1))}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
           {process.env.NODE_ENV !== "production" &&
           candidateCountBeforeDedup !== null &&
           uniqueCandidateCount !== null &&

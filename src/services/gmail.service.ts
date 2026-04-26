@@ -20,8 +20,13 @@ export interface SearchedEmail {
 }
 
 const MAX_GMAIL_QUERIES = 6;
-const MAX_RESULTS_PER_QUERY = 20;
-const MAX_UNIQUE_CANDIDATES = 100;
+/** Gmail allows up to 500; 100 balances recall vs payload for search mode. */
+const SEARCH_MODE_MAX_RESULTS_PER_QUERY = 100;
+/** After dedupe; keyword queries are listed first so this pool stays on-topic. */
+const SEARCH_MODE_MAX_UNIQUE_CANDIDATES = 150;
+const COLLECTION_MODE_MAX_RESULTS_PER_PAGE = 100;
+const COLLECTION_MODE_MAX_UNIQUE_CANDIDATES = 1000;
+const FETCH_DETAILS_BATCH_SIZE = 25;
 
 function sanitizeToken(value: string): string {
   return value.replace(/[()"]/g, " ").trim().replace(/\s+/g, " ");
@@ -107,8 +112,6 @@ export function buildCandidateGmailQueries(
   const sender = intent.sender ? sanitizeToken(intent.sender) : "";
   const senderEmail = sender.includes("@") ? sender : "";
 
-  pushUniqueQuery(queries, base);
-
   if (queryTypes.includes("topic") && mainKeyword) {
     pushUniqueQuery(queries, `${base} ${mainKeyword}`);
     pushUniqueQuery(queries, `${base} subject:${mainKeyword}`);
@@ -155,6 +158,55 @@ export function buildCandidateGmailQueries(
     if (keywords.length > 3) {
       pushUniqueQuery(queries, `${base} ${keywords.slice(0, 5).join(" ")}`);
     }
+  }
+
+  // Date-only query returns arbitrary recent mail and was previously pushed first,
+  // consuming the unique-id budget before keyword hits. Add it last as filler only.
+  if (queries.length === 0) {
+    pushUniqueQuery(queries, base);
+  } else if (!(queryTypes.includes("topic") && mainKeyword)) {
+    pushUniqueQuery(queries, base);
+  }
+
+  return queries.slice(0, MAX_GMAIL_QUERIES);
+}
+
+export function buildCollectionGmailQueries(
+  startDate: string,
+  endDate: string,
+  intent: Pick<SearchIntent, "sender" | "topic" | "semanticIntent">,
+): string[] {
+  const after = startDate.replace(/-/g, "/");
+  const before = endDate.replace(/-/g, "/");
+  const base = `after:${after} before:${before}`;
+  const queries: string[] = [];
+  const keywords = deriveKeywords(intent);
+  const topic = sanitizeToken(intent.topic ?? "");
+
+  if (topic) {
+    pushUniqueQuery(queries, `${base} ${topic}`);
+    pushUniqueQuery(queries, `${base} "${topic}"`);
+    pushUniqueQuery(queries, `${base} subject:${topic}`);
+    pushUniqueQuery(queries, `${base} from:${topic}`);
+  }
+
+  for (const keyword of keywords.slice(0, 4)) {
+    pushUniqueQuery(queries, `${base} ${keyword}`);
+    pushUniqueQuery(queries, `${base} subject:${keyword}`);
+    pushUniqueQuery(queries, `${base} from:${keyword}`);
+  }
+
+  const sender = sanitizeToken(intent.sender ?? "");
+  if (sender) {
+    pushUniqueQuery(queries, `${base} from:${sender}`);
+    pushUniqueQuery(queries, `${base} "${sender}"`);
+  }
+
+  // Same as search mode: avoid filling the 1000-id cap with date-only results before topic queries run.
+  if (queries.length === 0) {
+    pushUniqueQuery(queries, base);
+  } else if (!topic) {
+    pushUniqueQuery(queries, base);
   }
 
   return queries.slice(0, MAX_GMAIL_QUERIES);
@@ -208,7 +260,7 @@ export async function searchEmails(
     const listResponse = await gmail.users.messages.list({
       userId: "me",
       q: query,
-      maxResults: MAX_RESULTS_PER_QUERY,
+      maxResults: SEARCH_MODE_MAX_RESULTS_PER_QUERY,
     });
     const messages = listResponse.data.messages ?? [];
     for (const message of messages) {
@@ -219,7 +271,7 @@ export async function searchEmails(
   }
 
   const candidateCountBeforeDedup = messageIds.length;
-  const uniqueIds = Array.from(new Set(messageIds)).slice(0, MAX_UNIQUE_CANDIDATES);
+  const uniqueIds = Array.from(new Set(messageIds)).slice(0, SEARCH_MODE_MAX_UNIQUE_CANDIDATES);
   if (uniqueIds.length === 0) {
     return { emails: [], queriesUsed, candidateCountBeforeDedup };
   }
@@ -249,4 +301,139 @@ export async function searchEmails(
   );
 
   return { emails: results, queriesUsed, candidateCountBeforeDedup };
+}
+
+interface CollectionSearchResult {
+  emails: SearchedEmail[];
+  queriesUsed: string[];
+  totalFetched: number;
+  uniqueCandidateCount: number;
+}
+
+async function listMessageIdsForQuery(
+  gmail: ReturnType<typeof google.gmail>,
+  query: string,
+  maxUniqueLimit: number,
+  seenMessageIds: Set<string>,
+): Promise<{ fetchedCount: number }> {
+  let pageToken: string | undefined;
+  let fetchedCount = 0;
+
+  do {
+    const listResponse = await gmail.users.messages.list({
+      userId: "me",
+      q: query,
+      maxResults: COLLECTION_MODE_MAX_RESULTS_PER_PAGE,
+      pageToken,
+    });
+
+    const messages = listResponse.data.messages ?? [];
+    fetchedCount += messages.length;
+
+    for (const message of messages) {
+      if (!message.id) {
+        continue;
+      }
+      seenMessageIds.add(message.id);
+      if (seenMessageIds.size >= maxUniqueLimit) {
+        return { fetchedCount };
+      }
+    }
+
+    pageToken = listResponse.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return { fetchedCount };
+}
+
+async function fetchEmailDetailsInBatches(
+  gmail: ReturnType<typeof google.gmail>,
+  messageIds: string[],
+): Promise<SearchedEmail[]> {
+  const results: SearchedEmail[] = [];
+
+  for (let index = 0; index < messageIds.length; index += FETCH_DETAILS_BATCH_SIZE) {
+    const batch = messageIds.slice(index, index + FETCH_DETAILS_BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async (messageId) => {
+        const fullMessage = await gmail.users.messages.get({
+          userId: "me",
+          id: messageId,
+          format: "full",
+        });
+
+        const parsed = parseGmailMessage(fullMessage.data);
+        return {
+          id: fullMessage.data.id ?? messageId,
+          threadId: fullMessage.data.threadId ?? "",
+          subject: parsed.subject,
+          from: parsed.from,
+          to: parsed.to,
+          cc: parsed.cc,
+          date: parsed.date,
+          snippet: fullMessage.data.snippet ?? "",
+          body: parsed.body,
+          attachmentFilenames: parsed.attachmentFilenames,
+        };
+      }),
+    );
+    results.push(...batchResults);
+  }
+
+  return results;
+}
+
+export async function searchEmailsCollectionMode(
+  userId: string,
+  intent: Pick<SearchIntent, "sender" | "topic" | "semanticIntent">,
+  startDate: string,
+  endDate: string,
+): Promise<CollectionSearchResult> {
+  const googleAccount = await prisma.googleAccount.findUnique({
+    where: { userId },
+    select: { accessToken: true },
+  });
+
+  if (!googleAccount?.accessToken) {
+    throw new Error("Google account not connected for this user");
+  }
+
+  const oauthClient = createOAuthClient();
+  oauthClient.setCredentials({ access_token: googleAccount.accessToken });
+  const gmail = google.gmail({ version: "v1", auth: oauthClient });
+
+  const queriesUsed = buildCollectionGmailQueries(startDate, endDate, intent);
+  const seenMessageIds = new Set<string>();
+  let totalFetched = 0;
+
+  for (const query of queriesUsed) {
+    if (seenMessageIds.size >= COLLECTION_MODE_MAX_UNIQUE_CANDIDATES) {
+      break;
+    }
+    const queryResult = await listMessageIdsForQuery(
+      gmail,
+      query,
+      COLLECTION_MODE_MAX_UNIQUE_CANDIDATES,
+      seenMessageIds,
+    );
+    totalFetched += queryResult.fetchedCount;
+  }
+
+  const uniqueIds = Array.from(seenMessageIds).slice(0, COLLECTION_MODE_MAX_UNIQUE_CANDIDATES);
+  if (uniqueIds.length === 0) {
+    return {
+      emails: [],
+      queriesUsed,
+      totalFetched,
+      uniqueCandidateCount: 0,
+    };
+  }
+
+  const emails = await fetchEmailDetailsInBatches(gmail, uniqueIds);
+  return {
+    emails,
+    queriesUsed,
+    totalFetched,
+    uniqueCandidateCount: emails.length,
+  };
 }

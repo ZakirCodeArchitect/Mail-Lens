@@ -2,6 +2,12 @@ import { SearchIntent } from "@/ai/search-intent.service";
 import type { SearchedEmail } from "@/services/gmail.service";
 
 export type QueryType = "topic" | "sender" | "forwarded" | "attachment" | "link" | "intent";
+export type SearchMode = "search" | "collection";
+
+interface SearchModeDetection {
+  mode: SearchMode;
+  reason: string;
+}
 
 interface CandidateScore {
   ruleScore: number;
@@ -32,10 +38,93 @@ const STOPWORDS = new Set([
   "on",
   "a",
   "an",
+  "find",
+  "all",
+  "every",
+  "each",
+  "list",
+  "complete",
+  "fetch",
+  "retrieve",
+  "collect",
+  "export",
+  "download",
 ]);
 
 function normalizeText(value: string): string {
   return value.toLowerCase();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Lowercase text with punctuation collapsed to spaces so short acronyms
+ * are matched as whole tokens (avoids "qau" matching inside unrelated IDs/URLs).
+ */
+export function normalizeForTopicMatch(value: string): string {
+  return collapseWhitespace(normalizeText(value).replace(/[^a-z0-9]+/g, " "));
+}
+
+function requiresWordBoundary(term: string): boolean {
+  const trimmed = term.trim().toLowerCase();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  if (/\s/.test(trimmed)) {
+    return false;
+  }
+  return trimmed.length <= 5;
+}
+
+/**
+ * True if `term` appears in `haystack` as a real token/phrase match.
+ * Short tokens (<=5 chars, no spaces) use word boundaries; longer tokens use substring on normalized haystack.
+ */
+export function topicTermMatches(haystackRaw: string, termRaw: string): boolean {
+  const term = termRaw.trim().toLowerCase();
+  if (term.length < 2) {
+    return false;
+  }
+
+  if (/\s/.test(term)) {
+    const parts = collapseWhitespace(term)
+      .split(/\s+/)
+      .map((part) => escapeRegExp(part))
+      .filter(Boolean);
+    if (parts.length === 0) {
+      return false;
+    }
+    const pattern = parts.join("[\\s\\-]*");
+    return new RegExp(pattern, "i").test(normalizeText(haystackRaw));
+  }
+
+  const haystack = normalizeForTopicMatch(haystackRaw);
+  const needle = normalizeForTopicMatch(term);
+  if (!requiresWordBoundary(term)) {
+    return haystack.includes(needle);
+  }
+
+  const bounded = new RegExp(`(^|\\s)${escapeRegExp(needle)}(\\s|$)`, "i");
+  return bounded.test(` ${haystack} `);
+}
+
+export function hasHighPrecisionTopicHit(
+  email: Pick<SearchedEmail, "subject" | "snippet" | "from" | "attachmentFilenames">,
+  terms: string[],
+): boolean {
+  const fields = [
+    email.subject,
+    email.snippet,
+    email.from,
+    email.attachmentFilenames.join(" "),
+  ];
+  return terms.some((term) => fields.some((field) => topicTermMatches(field, term)));
 }
 
 function tokenize(value: string): string[] {
@@ -45,9 +134,53 @@ function tokenize(value: string): string[] {
     .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
 }
 
+export function extractDeterministicMatchTerms(userQuery: string, intent: SearchIntent): string[] {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+
+  for (const term of collectTopicTerms(userQuery, intent)) {
+    uniquePush(terms, seen, term);
+  }
+
+  if (intent.sender) {
+    uniquePush(terms, seen, intent.sender);
+    for (const token of tokenize(intent.sender)) {
+      uniquePush(terms, seen, token);
+    }
+  }
+
+  for (const token of tokenize(userQuery)) {
+    uniquePush(terms, seen, token);
+  }
+
+  return terms.filter((term) => term.length >= 2);
+}
+
+export function detectSearchMode(userQuery: string): SearchModeDetection {
+  const normalized = normalizeText(userQuery);
+
+  const collectionSignals: Array<{ regex: RegExp; reason: string }> = [
+    { regex: /\b(all emails|all matching emails|all related emails)\b/i, reason: "Query asks for all emails." },
+    { regex: /\b(every email|each email|complete list)\b/i, reason: "Query requests a complete email list." },
+    { regex: /\b(fetch all|collect all|retrieve all)\b/i, reason: "Query asks to fetch all matching emails." },
+    { regex: /\b(export|download)\b/i, reason: "Query implies bulk export or collection." },
+    {
+      regex: /\b(year[-\s]?wide|whole year|entire year|throughout \d{4}|in \d{4})\b/i,
+      reason: "Query suggests year-wide collection.",
+    },
+  ];
+
+  for (const signal of collectionSignals) {
+    if (signal.regex.test(normalized)) {
+      return { mode: "collection", reason: signal.reason };
+    }
+  }
+
+  return { mode: "search", reason: "Default semantic search mode for ranked top matches." };
+}
+
 function includesAnyToken(text: string, tokens: string[]): boolean {
-  const haystack = normalizeText(text);
-  return tokens.some((token) => haystack.includes(token));
+  return tokens.some((token) => topicTermMatches(text, token));
 }
 
 function uniquePush(items: string[], seen: Set<string>, value: string) {
@@ -206,11 +339,11 @@ export function hasExactTopicMatch(
     return false;
   }
 
-  const corpus = normalizeText(
-    [email.subject, email.snippet, email.body, email.attachmentFilenames.join(" ")].filter(Boolean).join(" "),
-  );
+  const corpus = [email.subject, email.snippet, email.body, email.attachmentFilenames.join(" ")]
+    .filter(Boolean)
+    .join("\n");
 
-  return exactTerms.some((term) => corpus.includes(normalizeText(term)));
+  return exactTerms.some((term) => topicTermMatches(corpus, term));
 }
 
 export function sortByRuleScoreAndDate(
