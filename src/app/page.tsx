@@ -16,6 +16,12 @@ export default function Home() {
           >
             Open Dashboard
           </Link>
+          <Link
+            href="/journal"
+            className="ml-3 inline-flex items-center rounded-md border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:text-slate-900"
+          >
+            Open Journal Filter
+          </Link>
         </div>
       </div>
     </main>
