@@ -43,6 +43,15 @@ interface VerifyLineItem {
   resultSizeEstimate: number | null;
   queriesChecked: string[];
   ok: boolean;
+  emails: Array<{
+    id: string;
+    threadId: string;
+    subject: string;
+    from: string;
+    date: string;
+    snippet: string;
+    gmailUrl: string;
+  }>;
 }
 
 interface VerifyResponse {
@@ -231,9 +240,11 @@ export function JournalSearchForm({ userId }: JournalSearchFormProps) {
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Senders / People</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                People / Email Identities
+              </p>
               <p className="text-xs text-slate-500">
-                Add sender emails. Use + to add more sender inputs.
+                Add emails or names to match anywhere in messages (from/to/cc/content). Use + to add more.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -263,7 +274,7 @@ export function JournalSearchForm({ userId }: JournalSearchFormProps) {
                   type="email"
                   value={sender}
                   onChange={(event) => updateSenderInput(index, event.target.value)}
-                  placeholder="sender@example.com"
+                  placeholder="person@example.com or Person Name"
                   className="h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
                 />
                 {senderInputs.length > 1 ? (
@@ -288,14 +299,48 @@ export function JournalSearchForm({ userId }: JournalSearchFormProps) {
           {senderVerify && senderVerify.items.length > 0 ? (
             <ul className="mt-2 space-y-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
               {senderVerify.items.map((row) => (
-                <li key={`sender-${row.display}`} className="flex flex-wrap items-baseline justify-between gap-2">
-                  <span className="font-medium text-slate-900">{row.display}</span>
-                  <span className={row.ok ? "text-emerald-700" : "text-slate-500"}>
-                    {row.ok ? "Received emails from this sender" : "No emails found from this sender"}
-                  </span>
+                <li key={`sender-${row.display}`} className="rounded-md border border-slate-100 p-2">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="font-medium text-slate-900">{row.display}</span>
+                    <span className={row.ok ? "text-emerald-700" : "text-slate-500"}>
+                      {row.ok
+                        ? `${row.resultSizeEstimate ?? 0} email${(row.resultSizeEstimate ?? 0) === 1 ? "" : "s"} found`
+                        : "0 emails found"}
+                    </span>
+                  </div>
+                  {row.emails.length > 0 ? (
+                    <details className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+                      <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+                        Show matched emails
+                      </summary>
+                      <div className="mt-2 max-h-72 space-y-2 overflow-auto pr-1">
+                        {row.emails.map((email) => (
+                          <article key={`sender-preview-${row.display}-${email.id}`} className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                            <p className="text-xs font-semibold text-slate-900">{email.subject || "(No subject)"}</p>
+                            <p className="mt-0.5 text-[11px] text-slate-600">From: {email.from || "Unknown sender"}</p>
+                            <p className="text-[11px] text-slate-500">{email.date || "Unknown date"}</p>
+                            <p className="mt-1 text-[11px] text-slate-700">{email.snippet || "(No snippet)"}</p>
+                            {email.gmailUrl ? (
+                              <a
+                                href={email.gmailUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-1 inline-flex text-[11px] font-semibold text-indigo-700 hover:text-indigo-600"
+                              >
+                                Open in Gmail
+                              </a>
+                            ) : null}
+                          </article>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
                 </li>
               ))}
             </ul>
+          ) : null}
+          {senderVerify && senderVerify.items.length > 0 ? (
+            <p className="mt-1 text-xs text-slate-500">Counts are within the selected date range.</p>
           ) : null}
         </div>
 
@@ -334,16 +379,48 @@ export function JournalSearchForm({ userId }: JournalSearchFormProps) {
           {sourceVerify && sourceVerify.items.length > 0 ? (
             <ul className="mt-2 space-y-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
               {sourceVerify.items.map((row) => (
-                <li key={`source-${row.display}`} className="flex flex-wrap items-baseline justify-between gap-2">
-                  <span className="font-medium text-slate-900">{row.display}</span>
-                  <span className={row.ok ? "text-emerald-700" : "text-slate-500"}>
-                    {row.ok
-                      ? "Emails found mentioning this source or keyword"
-                      : "No emails found mentioning this source or keyword"}
-                  </span>
+                <li key={`source-${row.display}`} className="rounded-md border border-slate-100 p-2">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="font-medium text-slate-900">{row.display}</span>
+                    <span className={row.ok ? "text-emerald-700" : "text-slate-500"}>
+                      {row.ok
+                        ? `${row.resultSizeEstimate ?? 0} email${(row.resultSizeEstimate ?? 0) === 1 ? "" : "s"} found`
+                        : "0 emails found"}
+                    </span>
+                  </div>
+                  {row.emails.length > 0 ? (
+                    <details className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+                      <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+                        Show matched emails
+                      </summary>
+                      <div className="mt-2 max-h-72 space-y-2 overflow-auto pr-1">
+                        {row.emails.map((email) => (
+                          <article key={`source-preview-${row.display}-${email.id}`} className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                            <p className="text-xs font-semibold text-slate-900">{email.subject || "(No subject)"}</p>
+                            <p className="mt-0.5 text-[11px] text-slate-600">From: {email.from || "Unknown sender"}</p>
+                            <p className="text-[11px] text-slate-500">{email.date || "Unknown date"}</p>
+                            <p className="mt-1 text-[11px] text-slate-700">{email.snippet || "(No snippet)"}</p>
+                            {email.gmailUrl ? (
+                              <a
+                                href={email.gmailUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-1 inline-flex text-[11px] font-semibold text-indigo-700 hover:text-indigo-600"
+                              >
+                                Open in Gmail
+                              </a>
+                            ) : null}
+                          </article>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
                 </li>
               ))}
             </ul>
+          ) : null}
+          {sourceVerify && sourceVerify.items.length > 0 ? (
+            <p className="mt-1 text-xs text-slate-500">Counts are within the selected date range.</p>
           ) : null}
         </div>
 

@@ -33,6 +33,19 @@ function parseLabel(value: unknown): JournalAiClassification["label"] {
   return "Irrelevant";
 }
 
+function labelToScore(label: JournalAiClassification["label"]): number {
+  if (label === "Highly Relevant") {
+    return 90;
+  }
+  if (label === "Relevant") {
+    return 75;
+  }
+  if (label === "Possible Match") {
+    return 55;
+  }
+  return 20;
+}
+
 function parseString(value: unknown, fallback: string): string {
   if (typeof value !== "string") {
     return fallback;
@@ -55,13 +68,15 @@ export async function classifyJournalRelevance(
       {
         role: "system",
         content:
-          "You are filtering emails for a university/college journal article.\n" +
-          "The user only wants emails useful as evidence for student or college achievements, awards, projects, seminars, webinars, talks, discussions, conferences, participation, recognition, or success stories.\n" +
-          "Return JSON only in this schema:\n" +
+          "You are filtering emails using ONLY the user's intent.\n" +
+          "Primary rule: decide relevance based on whether the email content semantically matches or answers the provided intent text.\n" +
+          "Do not apply any fixed domain assumptions (no hardcoded preference for achievements, jobs, courses, etc.).\n" +
+          "Do not auto-reject purely because of sender style (e.g. no-reply/notification); evaluate actual content against intent.\n" +
+          "Reject emails only when content is clearly unrelated to the intent (for example generic promotions, account-security notices, password reset/verification) and the intent does not ask for those.\n" +
+          "If intent and content align even with different wording/paraphrases, mark relevant.\n" +
+          "Return JSON only in this exact schema:\n" +
           '{"isRelevant": true, "aiScore": 0, "label": "Highly Relevant | Relevant | Possible Match | Irrelevant", "summary": "short summary", "reason": "why relevant or not"}\n' +
-          "Rules: be precise, reject routine admin emails/login notifications/generic reminders/unrelated promotions, include newsletter entries only if at least one relevant highlight is present, do not hallucinate.\n" +
-          "If the user intent asks for course/training/resource links from a specific person, treat substantive learning URLs (e.g. official course or learning-journey links) from that sender as relevant unless the message is clearly unrelated or pure account/security spam.\n" +
-          "Always set isRelevant to false for automated vendor mail (e.g. no-reply, notification@, onboarding/welcome-to-platform, activate/verify account, password reset) even if it mentions a product name or contains a generic learning portal link, unless the message is clearly substantive course content shared in context.",
+          "Be strict about truthfulness and do not hallucinate details.",
       },
       {
         role: "user",
@@ -88,10 +103,13 @@ export async function classifyJournalRelevance(
   }
 
   const parsed = JSON.parse(content) as JournalModelOutput;
+  const label = parseLabel(parsed.label);
+  const rawScore = parseScore(parsed.aiScore);
+  const aiScore = rawScore > 0 ? rawScore : labelToScore(label);
   return {
     isRelevant: parsed.isRelevant === true,
-    aiScore: parseScore(parsed.aiScore),
-    label: parseLabel(parsed.label),
+    aiScore,
+    label,
     summary: parseString(parsed.summary, "No summary generated."),
     reason: parseString(parsed.reason, "No reason provided."),
   };

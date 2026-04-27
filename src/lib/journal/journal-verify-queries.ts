@@ -3,6 +3,23 @@ function quote(value: string): string {
   return `"${escaped}"`;
 }
 
+function buildSenderAnywhereClause(sender: string): string {
+  const trimmed = sender.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const token = trimmed.includes(" ") ? quote(trimmed) : trimmed;
+  const rawToken = trimmed.includes(" ") ? null : trimmed;
+  const variants = [
+    `from:${token}`,
+    `to:${token}`,
+    `cc:${token}`,
+    quote(trimmed),
+    ...(rawToken ? [rawToken] : []),
+  ];
+  return `(${variants.join(" OR ")})`;
+}
+
 export function buildJournalDateRangeClause(startDate: string, endDate: string): string {
   const after = startDate.replace(/-/g, "/");
   const before = endDate.replace(/-/g, "/");
@@ -18,21 +35,22 @@ export function buildSenderVerifyQueries(
   const rows: Array<{ display: string; queries: string[] }> = [];
 
   for (const senderEmail of senderEmails) {
+    const clause = buildSenderAnywhereClause(senderEmail);
     rows.push({
       display: senderEmail,
-      queries: [`${base} from:${senderEmail}`],
+      queries: clause ? [`${base} ${clause}`] : [],
     });
   }
 
   for (const senderName of senderNames) {
-    const senderValue = senderName.includes(" ") ? quote(senderName) : senderName;
+    const clause = buildSenderAnywhereClause(senderName);
     rows.push({
       display: senderName,
-      queries: [`${base} from:${senderValue}`, `${base} ${quote(senderName)}`],
+      queries: clause ? [`${base} ${clause}`] : [],
     });
   }
 
-  return rows;
+  return rows.filter((row) => row.queries.length > 0);
 }
 
 /** Gmail queries used to sanity-check that a source/newsletter line returns candidates. */

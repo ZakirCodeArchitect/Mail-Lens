@@ -19,6 +19,23 @@ function pushUnique(queries: string[], query: string): void {
   }
 }
 
+function buildSenderAnywhereClause(sender: string): string {
+  const trimmed = sender.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const token = trimmed.includes(" ") ? quote(trimmed) : trimmed;
+  const rawToken = trimmed.includes(" ") ? null : trimmed;
+  const variants = [
+    `from:${token}`,
+    `to:${token}`,
+    `cc:${token}`,
+    quote(trimmed),
+    ...(rawToken ? [rawToken] : []),
+  ];
+  return `(${variants.join(" OR ")})`;
+}
+
 export function buildJournalGmailQueries(
   startDate: string,
   endDate: string,
@@ -34,13 +51,13 @@ export function buildJournalGmailQueries(
   const queries: string[] = [];
 
   for (const senderEmail of normalizedInputs.senderEmails) {
-    pushUnique(queries, `${base} from:${senderEmail}`);
+    const anywhereClause = buildSenderAnywhereClause(senderEmail);
+    pushUnique(queries, `${base} ${anywhereClause}`);
   }
 
   for (const senderName of normalizedInputs.senderNames) {
-    const senderValue = senderName.includes(" ") ? quote(senderName) : senderName;
-    pushUnique(queries, `${base} from:${senderValue}`);
-    pushUnique(queries, `${base} ${quote(senderName)}`);
+    const anywhereClause = buildSenderAnywhereClause(senderName);
+    pushUnique(queries, `${base} ${anywhereClause}`);
   }
 
   for (const source of normalizedInputs.sources) {
@@ -65,19 +82,19 @@ export function buildJournalGmailQueries(
   return queries.slice(0, MAX_TOTAL_QUERIES);
 }
 
-/** Gmail `from:` OR group so source/keyword queries do not pull unrelated accounts. */
+/** Gmail participant OR group so source/keyword queries can include sender mentions in any direction. */
 export function buildListedSenderFromClause(normalizedInputs: NormalizedJournalInputs): string | null {
   const parts: string[] = [];
   for (const senderEmail of normalizedInputs.senderEmails) {
-    const cleaned = senderEmail.trim();
-    if (cleaned) {
-      parts.push(`from:${cleaned}`);
+    const clause = buildSenderAnywhereClause(senderEmail);
+    if (clause) {
+      parts.push(clause);
     }
   }
   for (const senderName of normalizedInputs.senderNames) {
-    const senderValue = senderName.includes(" ") ? quote(senderName) : senderName.trim();
-    if (senderValue) {
-      parts.push(`from:${senderValue}`);
+    const clause = buildSenderAnywhereClause(senderName);
+    if (clause) {
+      parts.push(clause);
     }
   }
   if (parts.length === 0) {
@@ -113,13 +130,13 @@ export function buildJournalGmailQueriesScoped(
   const queries: string[] = [];
 
   for (const senderEmail of normalizedInputs.senderEmails) {
-    pushUnique(queries, `${base} from:${senderEmail}`);
+    const anywhereClause = buildSenderAnywhereClause(senderEmail);
+    pushUnique(queries, `${base} ${anywhereClause}`);
   }
 
   for (const senderName of normalizedInputs.senderNames) {
-    const senderValue = senderName.includes(" ") ? quote(senderName) : senderName;
-    pushUnique(queries, `${base} from:${senderValue}`);
-    pushUnique(queries, `${base} ${quote(senderName)}`);
+    const anywhereClause = buildSenderAnywhereClause(senderName);
+    pushUnique(queries, `${base} ${anywhereClause}`);
   }
 
   for (const source of normalizedInputs.sources) {

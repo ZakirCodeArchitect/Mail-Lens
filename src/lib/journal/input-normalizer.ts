@@ -13,6 +13,17 @@ export interface NormalizedJournalInputs {
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 
+function cleanSenderToken(value: string): string {
+  let cleaned = value.trim();
+  if (cleaned.startsWith("<") && cleaned.endsWith(">")) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  if (cleaned.toLowerCase().startsWith("mailto:")) {
+    cleaned = cleaned.slice("mailto:".length).trim();
+  }
+  return cleaned;
+}
+
 function toLines(input: string[] | string): string[] {
   if (Array.isArray(input)) {
     return input;
@@ -51,10 +62,14 @@ export function normalizeJournalInputs({
   const senderNames: string[] = [];
 
   for (const sender of senderValues) {
-    if (EMAIL_REGEX.test(sender)) {
-      senderEmails.push(sender.toLowerCase());
+    const cleanedSender = cleanSenderToken(sender);
+    if (!cleanedSender) {
+      continue;
+    }
+    if (EMAIL_REGEX.test(cleanedSender)) {
+      senderEmails.push(cleanedSender.toLowerCase());
     } else {
-      senderNames.push(sender);
+      senderNames.push(cleanedSender);
     }
   }
 

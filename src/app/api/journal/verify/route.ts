@@ -25,27 +25,126 @@ interface VerifyLineResult {
   resultSizeEstimate: number | null;
   queriesChecked: string[];
   ok: boolean;
+  emails: VerifyEmailPreview[];
+}
+
+interface VerifyEmailPreview {
+  id: string;
+  threadId: string;
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
+  gmailUrl: string;
 }
 
 function isValidDateInput(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-async function estimateForQuery(
+async function listMessageIdsForQuery(
   gmail: ReturnType<typeof google.gmail>,
   query: string,
-): Promise<number | null> {
-  const response = await gmail.users.messages.list({
-    userId: "me",
-    q: query,
-    maxResults: 1,
-  });
-  const estimate = response.data.resultSizeEstimate;
-  if (typeof estimate === "number" && !Number.isNaN(estimate)) {
-    return estimate;
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  let pageToken: string | undefined;
+
+  do {
+    const response = await gmail.users.messages.list({
+      userId: "me",
+      q: query,
+      maxResults: 100,
+      pageToken,
+    });
+    const messages = response.data.messages ?? [];
+    for (const message of messages) {
+      if (message.id) {
+        ids.add(message.id);
+      }
+    }
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return ids;
+}
+
+function toHeader(
+  headers: Array<{ name?: string | null; value?: string | null }> | undefined,
+  name: string,
+): string {
+  const value = headers?.find((header) => header.name?.toLowerCase() === name.toLowerCase())?.value;
+  return value?.trim() ?? "";
+}
+
+function dateToMs(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function dedupeVerifyPreviewsByThread(previews: VerifyEmailPreview[]): VerifyEmailPreview[] {
+  const byThread = new Map<string, VerifyEmailPreview>();
+  for (const preview of previews) {
+    const key = preview.threadId || preview.id;
+    const existing = byThread.get(key);
+    if (!existing || dateToMs(preview.date) > dateToMs(existing.date)) {
+      byThread.set(key, preview);
+    }
   }
-  const messages = response.data.messages ?? [];
-  return messages.length > 0 ? 1 : 0;
+  return Array.from(byThread.values());
+}
+
+async function fetchVerifyEmailPreview(
+  gmail: ReturnType<typeof google.gmail>,
+  messageId: string,
+): Promise<VerifyEmailPreview | null> {
+  try {
+    const response = await gmail.users.messages.get({
+      userId: "me",
+      id: messageId,
+      format: "metadata",
+      metadataHeaders: ["Subject", "From", "Date"],
+    });
+    const payloadHeaders = response.data.payload?.headers ?? [];
+    const threadId = response.data.threadId ?? "";
+    return {
+      id: response.data.id ?? messageId,
+      threadId,
+      subject: toHeader(payloadHeaders, "Subject"),
+      from: toHeader(payloadHeaders, "From"),
+      date: toHeader(payloadHeaders, "Date"),
+      snippet: response.data.snippet ?? "",
+      gmailUrl: threadId
+        ? `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(threadId)}`
+        : `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(response.data.id ?? messageId)}`,
+    };
+  } catch (error) {
+    console.warn("[journal/verify] message preview fetch failed", {
+      messageId,
+      error: error instanceof Error ? error.message : "unknown",
+    });
+    return null;
+  }
+}
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const current = nextIndex;
+      nextIndex += 1;
+      results[current] = await mapper(items[current], current);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }
 
 export async function POST(request: NextRequest) {
@@ -113,17 +212,15 @@ export async function POST(request: NextRequest) {
     const items: VerifyLineResult[] = [];
 
     for (const entry of entries) {
-      let maxEstimate = 0;
-      let sawEstimate = false;
+      const uniqueIds = new Set<string>();
       const queriesChecked: string[] = [];
 
       for (const query of entry.queries) {
         queriesChecked.push(query);
         try {
-          const est = await estimateForQuery(gmail, query);
-          if (est !== null) {
-            sawEstimate = true;
-            maxEstimate = Math.max(maxEstimate, est);
+          const queryIds = await listMessageIdsForQuery(gmail, query);
+          for (const messageId of queryIds) {
+            uniqueIds.add(messageId);
           }
         } catch (err) {
           console.warn("[journal/verify] list failed", {
@@ -133,12 +230,19 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      const resultSizeEstimate = sawEstimate ? maxEstimate : null;
+      const resultSizeEstimate = uniqueIds.size;
+      const previewsRaw = await runWithConcurrency(Array.from(uniqueIds), 8, async (messageId) =>
+        fetchVerifyEmailPreview(gmail, messageId),
+      );
+      const emails = dedupeVerifyPreviewsByThread(
+        previewsRaw.filter((item): item is VerifyEmailPreview => Boolean(item)),
+      ).sort((a, b) => dateToMs(b.date) - dateToMs(a.date));
       items.push({
         display: entry.display,
-        resultSizeEstimate,
+        resultSizeEstimate: emails.length,
         queriesChecked,
-        ok: resultSizeEstimate !== null && resultSizeEstimate > 0,
+        ok: emails.length > 0,
+        emails,
       });
     }
 

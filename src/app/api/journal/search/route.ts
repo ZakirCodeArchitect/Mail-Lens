@@ -6,14 +6,10 @@ import { normalizeJournalInputs } from "@/lib/journal/input-normalizer";
 import { buildJournalKeywordSet } from "@/lib/journal/journal-keywords";
 import { buildJournalGmailQueries } from "@/lib/journal/journal-query-builder";
 import {
-  isAiUncertain,
-  isVerifiedSourceNewsletter,
-  looksLikeRoutineTransactionalEmail,
   scoreJournalEmail,
-  shouldAutoInclude,
 } from "@/lib/journal/journal-rule-scorer";
 import {
-  fromMatchesListedSenders,
+  emailMatchesListedSenders,
   hasListedSenders,
   looksLikeSapAutomatedNotification,
 } from "@/lib/journal/journal-sender-gate";
@@ -52,9 +48,8 @@ interface JournalSearchResult {
   matchedSignals: string[];
 }
 
-const MAX_UNIQUE_EMAILS = 1500;
-const MAX_PER_QUERY = 100;
-const MAX_AI_UNCERTAIN = 150;
+const MAX_UNIQUE_EMAILS = 20000;
+const MAX_PER_QUERY = MAX_UNIQUE_EMAILS;
 const AI_CONCURRENCY = 3;
 
 function isValidDateInput(value: string): boolean {
@@ -77,6 +72,24 @@ function toLabel(score: number): ResultLabel | "Irrelevant" {
 function containsAnyTerm(text: string, terms: string[]): boolean {
   const lowerText = text.toLowerCase();
   return terms.some((term) => lowerText.includes(term.toLowerCase()));
+}
+
+function emailMatchesSources(
+  email: Pick<ParsedJournalEmail, "subject" | "snippet" | "bodyText" | "from" | "to" | "attachmentFilenames">,
+  sources: string[],
+): boolean {
+  if (sources.length === 0) {
+    return true;
+  }
+  const corpus = [
+    email.subject,
+    email.snippet,
+    email.bodyText,
+    email.from,
+    email.to,
+    email.attachmentFilenames.join(" "),
+  ].join("\n");
+  return containsAnyTerm(corpus, sources);
 }
 
 function dateToMs(value: string): number {
@@ -159,7 +172,11 @@ export async function POST(request: NextRequest) {
         break;
       }
       const remaining = MAX_UNIQUE_EMAILS - uniqueMessageIds.size;
-      const { messageIds, fetchedCount } = await searchGmailMessages(gmail, query, Math.min(MAX_PER_QUERY, remaining));
+      const { messageIds, fetchedCount } = await searchGmailMessages(
+        gmail,
+        query,
+        Math.min(MAX_PER_QUERY, remaining),
+      );
       totalFetched += fetchedCount;
       for (const messageId of messageIds) {
         uniqueMessageIds.add(messageId);
@@ -175,106 +192,32 @@ export async function POST(request: NextRequest) {
 
     let pipelineEmails = parsedEmails;
     if (hasListedSenders(normalizedInputs)) {
-      pipelineEmails = parsedEmails.filter((email) => fromMatchesListedSenders(email.from, normalizedInputs));
+      pipelineEmails = parsedEmails.filter((email) => emailMatchesListedSenders(email, normalizedInputs));
       pipelineEmails = pipelineEmails.filter((email) => !looksLikeSapAutomatedNotification(email.from));
+    }
+    if (normalizedInputs.sources.length > 0) {
+      pipelineEmails = pipelineEmails.filter((email) => emailMatchesSources(email, normalizedInputs.sources));
     }
 
     const uniqueCandidates = parsedCount;
     const afterListedSenderGate = pipelineEmails.length;
 
-    const candidatesAfterKeywordFilter: Array<{
+    const candidatesForAi: Array<{
       email: ParsedJournalEmail;
       ruleScore: number;
       matchedSignals: string[];
     }> = [];
 
     for (const email of pipelineEmails) {
-      if (looksLikeRoutineTransactionalEmail(email)) {
-        continue;
-      }
       const score = scoreJournalEmail(email, normalizedInputs, intentTerms);
-      const hasStrongSenderOrSource =
-        containsAnyTerm(email.from, [...normalizedInputs.senderEmails, ...normalizedInputs.senderNames]) ||
-        containsAnyTerm(email.subject, normalizedInputs.sources) ||
-        containsAnyTerm(email.snippet, normalizedInputs.sources);
-      const hasKeyword = containsAnyTerm(
-        `${email.subject} ${email.snippet} ${email.bodyText}`,
-        intentTerms,
-      );
-      const hasSource = containsAnyTerm(`${email.subject} ${email.snippet} ${email.bodyText}`, normalizedInputs.sources);
-      const keep = hasStrongSenderOrSource || hasKeyword || hasSource;
-
-      if (keep) {
-        candidatesAfterKeywordFilter.push({
-          email,
-          ruleScore: score.ruleScore,
-          matchedSignals: score.matchedSignals,
-        });
-      }
+      candidatesForAi.push({
+        email,
+        ruleScore: score.ruleScore,
+        matchedSignals: score.matchedSignals,
+      });
     }
 
-    const autoIncluded: JournalSearchResult[] = [];
-    const uncertainCandidates: Array<{
-      email: ParsedJournalEmail;
-      ruleScore: number;
-      matchedSignals: string[];
-    }> = [];
-
-    for (const candidate of candidatesAfterKeywordFilter) {
-      if (looksLikeRoutineTransactionalEmail(candidate.email)) {
-        continue;
-      }
-      if (looksLikeSapAutomatedNotification(candidate.email.from)) {
-        continue;
-      }
-      if (shouldAutoInclude(candidate.ruleScore, candidate.matchedSignals, candidate.email)) {
-        const label = toLabel(candidate.ruleScore);
-        if (label !== "Irrelevant") {
-          autoIncluded.push({
-            id: candidate.email.id,
-            threadId: candidate.email.threadId,
-            subject: candidate.email.subject,
-            from: candidate.email.from,
-            date: candidate.email.date,
-            snippet: candidate.email.snippet,
-            gmailUrl: candidate.email.gmailUrl,
-            label,
-            ruleScore: candidate.ruleScore,
-            aiScore: 0,
-            finalScore: candidate.ruleScore,
-            summary: "Auto-included by strong rule-based journal signals.",
-            reason: "High confidence keyword/source/sender match from rule scoring.",
-            matchedSignals: candidate.matchedSignals,
-          });
-        }
-        continue;
-      }
-
-      if (looksLikeRoutineTransactionalEmail(candidate.email)) {
-        continue;
-      }
-      if (looksLikeSapAutomatedNotification(candidate.email.from)) {
-        continue;
-      }
-
-      if (isAiUncertain(candidate.ruleScore)) {
-        uncertainCandidates.push(candidate);
-        continue;
-      }
-
-      if (candidate.ruleScore >= 70) {
-        uncertainCandidates.push(candidate);
-        continue;
-      }
-
-      if (isVerifiedSourceNewsletter(candidate.email, normalizedInputs.sources)) {
-        uncertainCandidates.push(candidate);
-      }
-    }
-
-    const aiInput = uncertainCandidates
-      .sort((a, b) => b.ruleScore - a.ruleScore)
-      .slice(0, MAX_AI_UNCERTAIN);
+    const aiInput = [...candidatesForAi].sort((a, b) => b.ruleScore - a.ruleScore);
     const aiChecked = aiInput.length;
     const aiResultsRaw = await runWithConcurrency(aiInput, AI_CONCURRENCY, async (candidate) => {
       try {
@@ -300,8 +243,9 @@ export async function POST(request: NextRequest) {
         continue;
       }
       const { candidate, classification } = item;
-      const finalScore = Math.max(candidate.ruleScore, classification.aiScore);
-      if (!classification.isRelevant || finalScore < 50) {
+      const finalScore = classification.aiScore;
+      const aiSaysRelevant = classification.isRelevant || classification.label === "Highly Relevant" || classification.label === "Relevant";
+      if (!aiSaysRelevant) {
         continue;
       }
       const label = toLabel(finalScore);
@@ -327,16 +271,31 @@ export async function POST(request: NextRequest) {
     }
 
     const finalById = new Map<string, JournalSearchResult>();
-    for (const result of [...autoIncluded, ...aiIncluded]) {
-      const existing = finalById.get(result.id);
-      if (!existing || result.finalScore > existing.finalScore) {
-        finalById.set(result.id, result);
+    for (const result of aiIncluded) {
+      const dedupeKey = result.threadId || result.id;
+      const existing = finalById.get(dedupeKey);
+      if (!existing) {
+        finalById.set(dedupeKey, result);
+        continue;
+      }
+      if (result.finalScore > existing.finalScore) {
+        finalById.set(dedupeKey, result);
+        continue;
+      }
+      if (result.finalScore === existing.finalScore && dateToMs(result.date) > dateToMs(existing.date)) {
+        finalById.set(dedupeKey, result);
       }
     }
 
     const results = Array.from(finalById.values()).sort((a, b) => {
       if (b.finalScore !== a.finalScore) {
         return b.finalScore - a.finalScore;
+      }
+      if (b.aiScore !== a.aiScore) {
+        return b.aiScore - a.aiScore;
+      }
+      if (b.ruleScore !== a.ruleScore) {
+        return b.ruleScore - a.ruleScore;
       }
       return dateToMs(b.date) - dateToMs(a.date);
     });
@@ -346,8 +305,8 @@ export async function POST(request: NextRequest) {
         totalFetched,
         uniqueCandidates,
         afterListedSenderGate,
-        afterKeywordFilter: candidatesAfterKeywordFilter.length,
-        autoIncluded: autoIncluded.length,
+        afterKeywordFilter: candidatesForAi.length,
+        autoIncluded: 0,
         aiChecked,
         finalCount: results.length,
       },

@@ -1,4 +1,5 @@
 import type { NormalizedJournalInputs } from "@/lib/journal/input-normalizer";
+import type { ParsedJournalEmail } from "@/services/journal-gmail.service";
 
 /** True when the user configured at least one sender filter (email or name). */
 export function hasListedSenders(normalized: NormalizedJournalInputs): boolean {
@@ -7,6 +8,10 @@ export function hasListedSenders(normalized: NormalizedJournalInputs): boolean {
 
 function normalizeAddr(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Extract likely mailbox addresses from a Gmail From header. */
@@ -44,6 +49,35 @@ export function fromMatchesListedSenders(from: string, normalized: NormalizedJou
   }
   const fromLower = from.toLowerCase();
   if (wantNames.some((name) => fromLower.includes(name))) {
+    return true;
+  }
+  return false;
+}
+
+function containsExactEmail(haystack: string, email: string): boolean {
+  const bounded = new RegExp(`(^|[^a-z0-9._%+-])${escapeRegExp(email)}([^a-z0-9._%+-]|$)`, "i");
+  return bounded.test(haystack);
+}
+
+/**
+ * True when listed sender email/name appears anywhere meaningful in message context
+ * (from/to/subject/snippet/body), not just in the From header.
+ */
+export function emailMatchesListedSenders(
+  email: Pick<ParsedJournalEmail, "from" | "to" | "subject" | "snippet" | "bodyText">,
+  normalized: NormalizedJournalInputs,
+): boolean {
+  const wantEmails = normalized.senderEmails.map(normalizeAddr);
+  const wantNames = normalized.senderNames.map((n) => n.trim().toLowerCase()).filter(Boolean);
+  if (wantEmails.length === 0 && wantNames.length === 0) {
+    return true;
+  }
+
+  const corpus = `${email.from}\n${email.to}\n${email.subject}\n${email.snippet}\n${email.bodyText}`.toLowerCase();
+  if (wantEmails.some((wanted) => containsExactEmail(corpus, wanted))) {
+    return true;
+  }
+  if (wantNames.some((name) => corpus.includes(name))) {
     return true;
   }
   return false;
